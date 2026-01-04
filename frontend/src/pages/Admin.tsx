@@ -3,6 +3,7 @@ import { useAdminStore } from '../stores/adminStore';
 import { useLibraryStore } from '../stores/libraryStore';
 import { wsService } from '../services/websocket';
 import type { ClientInfo, LibraryLocation } from '../types';
+import { HelpModal, HelpButton, useHelpModal } from '../components/HelpModal';
 
 type AdminTab = 'clients' | 'library' | 'search-logs' | 'network' | 'settings';
 
@@ -177,6 +178,7 @@ function LibraryManagement() {
   const [newPath, setNewPath] = useState('');
   const [newName, setNewName] = useState('');
   const [scanningId, setScanningId] = useState<number | null>(null);
+  const { activeHelp, openHelp, closeHelp } = useHelpModal();
 
   useEffect(() => {
     fetchLocations();
@@ -213,14 +215,18 @@ function LibraryManagement() {
   };
 
   return (
+    <>
     <div className="bg-matte-gray rounded-2xl overflow-hidden">
       <div className="px-6 py-4 border-b border-white/5">
         <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-white">Song Library</h2>
-            <p className="text-sm text-gray-400">
-              {stats.total_songs} songs, {stats.total_plays} total plays
-            </p>
+          <div className="flex items-center gap-2">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Song Library</h2>
+              <p className="text-sm text-gray-400">
+                {stats.total_songs} songs, {stats.total_plays} total plays
+              </p>
+            </div>
+            <HelpButton onClick={() => openHelp('library')} />
           </div>
           <button
             onClick={() => setShowAddForm(!showAddForm)}
@@ -305,6 +311,10 @@ function LibraryManagement() {
         )}
       </div>
     </div>
+    {activeHelp && (
+      <HelpModal topic={activeHelp} isOpen={true} onClose={closeHelp} />
+    )}
+    </>
   );
 }
 
@@ -328,6 +338,7 @@ function NetworkSettings() {
   const [savedUrl, setSavedUrl] = useState<string | null>(null);
   const [showQRModal, setShowQRModal] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const { activeHelp, openHelp, closeHelp } = useHelpModal();
 
   // Fetch networks and saved URL when this tab is active
   useEffect(() => {
@@ -400,11 +411,15 @@ function NetworkSettings() {
   };
 
   return (
+    <>
     <div className="space-y-6">
       {/* Network Interfaces */}
       <div className="bg-matte-gray rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-white/5">
-          <h2 className="text-lg font-semibold text-white">Network Interfaces</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold text-white">Network Interfaces</h2>
+            <HelpButton onClick={() => openHelp('network')} />
+          </div>
           <p className="text-sm text-gray-400">Available network connections for client access</p>
         </div>
 
@@ -581,6 +596,10 @@ function NetworkSettings() {
         </div>
       </div>
     </div>
+    {activeHelp && (
+      <HelpModal topic={activeHelp} isOpen={true} onClose={closeHelp} />
+    )}
+    </>
   );
 }
 
@@ -628,6 +647,7 @@ function GeneralSettings() {
   });
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const { activeHelp, openHelp, closeHelp } = useHelpModal();
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -679,11 +699,15 @@ function GeneralSettings() {
   }
 
   return (
+    <>
     <div className="space-y-6">
       {/* Server Configuration */}
       <div className="bg-matte-gray rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-white/5">
-          <h2 className="text-lg font-semibold text-white">Server Configuration</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold text-white">Server Configuration</h2>
+            <HelpButton onClick={() => openHelp('certificates')} />
+          </div>
           <p className="text-sm text-gray-400">Changes require server restart to take effect</p>
         </div>
 
@@ -712,7 +736,10 @@ function GeneralSettings() {
           </div>
 
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Admin PIN</label>
+            <div className="flex items-center gap-2 mb-1">
+              <label className="block text-sm text-gray-400">Admin PIN</label>
+              <HelpButton onClick={() => openHelp('adminPin')} />
+            </div>
             <p className="text-xs text-gray-500 mb-2">Leave empty for localhost-only access</p>
             <input
               type="text"
@@ -724,7 +751,10 @@ function GeneralSettings() {
           </div>
 
           <div>
-            <label className="block text-sm text-gray-400 mb-1">YouTube API Key</label>
+            <div className="flex items-center gap-2 mb-1">
+              <label className="block text-sm text-gray-400">YouTube API Key</label>
+              <HelpButton onClick={() => openHelp('youtubeApi')} />
+            </div>
             <p className="text-xs text-gray-500 mb-2">Leave empty to disable YouTube search</p>
             <input
               type="text"
@@ -736,7 +766,10 @@ function GeneralSettings() {
           </div>
 
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Video Player Path</label>
+            <div className="flex items-center gap-2 mb-1">
+              <label className="block text-sm text-gray-400">Video Player Path</label>
+              <HelpButton onClick={() => openHelp('videoPlayer')} />
+            </div>
             <input
               type="text"
               value={settings.video_player}
@@ -855,6 +888,10 @@ function GeneralSettings() {
         )}
       </div>
     </div>
+    {activeHelp && (
+      <HelpModal topic={activeHelp} isOpen={true} onClose={closeHelp} />
+    )}
+    </>
   );
 }
 
