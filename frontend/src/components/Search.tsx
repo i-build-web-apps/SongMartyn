@@ -1,0 +1,307 @@
+import { useEffect, useRef, useState } from 'react';
+import { useSearchStore } from '../stores/searchStore';
+import type { LibrarySong } from '../types';
+
+function formatDuration(seconds: number): string {
+  if (!seconds) return '';
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+function SongCard({ song, onSelect }: { song: LibrarySong; onSelect: () => void }) {
+  return (
+    <button
+      onClick={onSelect}
+      className="w-full flex items-center gap-3 p-3 bg-matte-black/50 rounded-xl hover:bg-matte-black transition-colors text-left"
+    >
+      {/* Thumbnail or placeholder */}
+      <div className="w-12 h-12 bg-matte-gray rounded-lg flex-shrink-0 flex items-center justify-center overflow-hidden">
+        {song.thumbnail_url ? (
+          <img src={song.thumbnail_url} alt="" className="w-full h-full object-cover" />
+        ) : (
+          <svg className="w-6 h-6 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M18 3a1 1 0 00-1.196-.98l-10 2A1 1 0 006 5v9.114A4.369 4.369 0 005 14c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V7.82l8-1.6v5.894A4.37 4.37 0 0015 12c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V3z" />
+          </svg>
+        )}
+      </div>
+
+      {/* Song info */}
+      <div className="flex-1 min-w-0">
+        <h4 className="text-white font-medium truncate">{song.title}</h4>
+        <p className="text-gray-400 text-sm truncate">{song.artist || 'Unknown Artist'}</p>
+      </div>
+
+      {/* Duration */}
+      {song.duration > 0 && (
+        <span className="text-gray-500 text-sm">{formatDuration(song.duration)}</span>
+      )}
+    </button>
+  );
+}
+
+function ConfirmSongModal({ song, onConfirm, onCancel }: {
+  song: LibrarySong;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60" onClick={onCancel} />
+      <div className="relative bg-matte-gray rounded-2xl p-6 w-full max-w-sm animate-slide-up">
+        {/* Song preview */}
+        <div className="flex items-center gap-4 mb-6">
+          <div className="w-16 h-16 bg-matte-black rounded-xl flex-shrink-0 flex items-center justify-center overflow-hidden">
+            {song.thumbnail_url ? (
+              <img src={song.thumbnail_url} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <svg className="w-8 h-8 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M18 3a1 1 0 00-1.196-.98l-10 2A1 1 0 006 5v9.114A4.369 4.369 0 005 14c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V7.82l8-1.6v5.894A4.37 4.37 0 0015 12c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V3z" />
+              </svg>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-white font-semibold text-lg truncate">{song.title}</h3>
+            <p className="text-gray-400 truncate">{song.artist || 'Unknown Artist'}</p>
+            {song.duration > 0 && (
+              <p className="text-gray-500 text-sm">{formatDuration(song.duration)}</p>
+            )}
+          </div>
+        </div>
+
+        <p className="text-center text-white mb-6">Do you want to sing this song?</p>
+
+        {/* Buttons */}
+        <div className="flex gap-3">
+          <button
+            onClick={onCancel}
+            className="flex-1 py-3 bg-matte-black text-gray-400 font-semibold rounded-xl hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="flex-1 py-3 bg-yellow-neon text-indigo-deep font-semibold rounded-xl hover:scale-[1.02] transition-transform"
+          >
+            Add to Queue
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TabButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex-1 py-2 px-3 text-sm font-medium rounded-lg transition-colors ${
+        active
+          ? 'bg-yellow-neon text-indigo-deep'
+          : 'bg-matte-black text-gray-400 hover:text-white'
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+export function Search() {
+  const {
+    query,
+    results,
+    popularSongs,
+    historySongs,
+    youtubeResults,
+    activeTab,
+    isLoading,
+    isOpen,
+    setQuery,
+    setActiveTab,
+    search,
+    searchYouTube,
+    closeSearch,
+    addToQueue,
+  } = useSearchStore();
+
+  const inputRef = useRef<HTMLInputElement>(null);
+  const searchTimeoutRef = useRef<number | null>(null);
+  const [selectedSong, setSelectedSong] = useState<LibrarySong | null>(null);
+
+  // Focus input when opening
+  useEffect(() => {
+    if (isOpen && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [isOpen]);
+
+  // Debounced search
+  useEffect(() => {
+    if (activeTab !== 'search' && activeTab !== 'youtube') return;
+
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    if (query.trim()) {
+      searchTimeoutRef.current = window.setTimeout(() => {
+        if (activeTab === 'youtube') {
+          searchYouTube();
+        } else {
+          search();
+        }
+      }, 300);
+    }
+
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+    };
+  }, [query, activeTab, search, searchYouTube]);
+
+  // Handle escape key
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (selectedSong) {
+          setSelectedSong(null);
+        } else if (isOpen) {
+          closeSearch();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [isOpen, selectedSong, closeSearch]);
+
+  if (!isOpen) return null;
+
+  // Get current song list based on active tab
+  const currentSongs =
+    activeTab === 'search' ? results :
+    activeTab === 'popular' ? popularSongs :
+    activeTab === 'history' ? historySongs :
+    activeTab === 'youtube' ? youtubeResults : [];
+
+  const handleSelectSong = (song: LibrarySong) => {
+    setSelectedSong(song);
+  };
+
+  const handleConfirmAdd = () => {
+    if (selectedSong) {
+      addToQueue(selectedSong);
+      setSelectedSong(null);
+      closeSearch();
+    }
+  };
+
+  const getEmptyMessage = () => {
+    if (activeTab === 'search' && !query) return 'Start typing to search your library...';
+    if (activeTab === 'search' && query) return 'No songs found in library';
+    if (activeTab === 'popular') return 'No popular songs yet';
+    if (activeTab === 'history') return 'No song history yet';
+    if (activeTab === 'youtube' && !query) return 'Search YouTube for karaoke tracks...';
+    if (activeTab === 'youtube' && query) return 'No YouTube results found';
+    return '';
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={closeSearch} />
+
+      {/* Search panel */}
+      <div className="relative mt-auto bg-matte-gray rounded-t-3xl max-h-[85vh] flex flex-col animate-slide-up">
+        {/* Handle bar */}
+        <div className="flex justify-center py-3">
+          <div className="w-12 h-1 bg-gray-600 rounded-full" />
+        </div>
+
+        {/* Header */}
+        <div className="px-4 pb-4 space-y-4">
+          {/* Close button and title */}
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold text-white">Find a Song</h2>
+            <button
+              onClick={closeSearch}
+              className="p-2 text-gray-400 hover:text-white transition-colors"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Search input */}
+          <div className="relative">
+            <svg className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={activeTab === 'youtube' ? 'Search YouTube for karaoke...' : 'Search by title or artist...'}
+              className="w-full pl-12 pr-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
+            />
+            {query && (
+              <button
+                onClick={() => setQuery('')}
+                className="absolute right-4 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-white"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+
+          {/* Tabs */}
+          <div className="flex gap-2">
+            <TabButton label="Library" active={activeTab === 'search'} onClick={() => setActiveTab('search')} />
+            <TabButton label="YouTube" active={activeTab === 'youtube'} onClick={() => setActiveTab('youtube')} />
+            <TabButton label="Popular" active={activeTab === 'popular'} onClick={() => setActiveTab('popular')} />
+            <TabButton label="My Songs" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
+          </div>
+        </div>
+
+        {/* Results */}
+        <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-2">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="w-8 h-8 border-2 border-yellow-neon border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : currentSongs.length === 0 ? (
+            <div className="text-center py-12">
+              <p className="text-gray-500">{getEmptyMessage()}</p>
+              {activeTab === 'youtube' && (
+                <p className="text-gray-600 text-sm mt-2">
+                  Tip: Add "karaoke" or "instrumental" to your search
+                </p>
+              )}
+            </div>
+          ) : (
+            currentSongs.map((song) => (
+              <SongCard
+                key={song.id}
+                song={song}
+                onSelect={() => handleSelectSong(song)}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Confirmation modal */}
+      {selectedSong && (
+        <ConfirmSongModal
+          song={selectedSong}
+          onConfirm={handleConfirmAdd}
+          onCancel={() => setSelectedSong(null)}
+        />
+      )}
+    </div>
+  );
+}

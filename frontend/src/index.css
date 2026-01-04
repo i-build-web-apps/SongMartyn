@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+/* SongMartyn Matte Design Theme */
+@theme {
+  --color-indigo-deep: #1A1B41;
+  --color-yellow-neon: #F4D35E;
+  --color-matte-black: #0D0D0D;
+  --color-matte-gray: #1F1F1F;
+  --color-matte-light: #2A2A2A;
+}
+
+:root {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #FFFFFF;
+  background-color: var(--color-indigo-deep);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: linear-gradient(180deg, var(--color-indigo-deep) 0%, var(--color-matte-black) 100%);
+}
+
+/* Aerial transition animations */
+@keyframes aerial-in {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.aerial-enter {
+  animation: aerial-in 0.3s ease-out;
+}
