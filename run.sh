@@ -21,6 +21,15 @@ BACKEND_DIR="$SCRIPT_DIR/backend"
 echo "=== SongMartyn Build & Run ==="
 echo ""
 
+# Kill any existing instances
+if pgrep -x "songmartyn" > /dev/null; then
+    echo "[0/3] Stopping existing SongMartyn instance..."
+    pkill -x "songmartyn" 2>/dev/null || true
+    sleep 1
+    echo "  Stopped."
+    echo ""
+fi
+
 # Build frontend
 echo "[1/3] Building frontend..."
 cd "$FRONTEND_DIR"
