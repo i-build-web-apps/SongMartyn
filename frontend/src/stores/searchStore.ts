@@ -3,6 +3,28 @@ import type { LibrarySong, SongHistory } from '../types';
 
 const API_BASE = import.meta.env.DEV ? 'https://localhost:8443' : '';
 
+// Feature flags
+interface Features {
+  youtube_enabled: boolean;
+  admin_localhost_only: boolean;
+}
+
+let featuresCache: Features | null = null;
+
+export async function getFeatures(): Promise<Features> {
+  if (featuresCache) return featuresCache;
+  try {
+    const res = await fetch(`${API_BASE}/api/features`);
+    if (res.ok) {
+      featuresCache = await res.json();
+      return featuresCache!;
+    }
+  } catch (err) {
+    console.error('Failed to fetch features:', err);
+  }
+  return { youtube_enabled: false, admin_localhost_only: true };
+}
+
 // Convert SongHistory to LibrarySong-like format for display
 function historyToSong(history: SongHistory): LibrarySong {
   return {
@@ -189,6 +211,24 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
   },
 
   addToQueue: (song: LibrarySong) => {
+    // Log the song selection
+    const { query, activeTab } = get();
+    const source = activeTab === 'youtube' ? 'youtube' : 'library';
+    const martynKey = localStorage.getItem('songmartyn_key') || '';
+
+    fetch(`${API_BASE}/api/library/select`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        song_id: String(song.id),
+        song_title: song.title,
+        song_artist: song.artist || '',
+        source,
+        search_query: query,
+        martyn_key: martynKey,
+      }),
+    }).catch(err => console.error('Failed to log song selection:', err));
+
     // This will be handled via WebSocket
     // For now, we'll dispatch a custom event that the websocket service can listen to
     const event = new CustomEvent('songmartyn:queue_add', { detail: song });

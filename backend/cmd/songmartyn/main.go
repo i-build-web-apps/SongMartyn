@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 
@@ -41,6 +43,7 @@ type Config struct {
 	CertFile      string
 	KeyFile       string
 	YouTubeAPIKey string
+	VideoPlayer   string
 }
 
 // App holds the application state
@@ -96,6 +99,7 @@ func main() {
 		CertFile:      getEnv("TLS_CERT", "./certs/cert.pem"),
 		KeyFile:       getEnv("TLS_KEY", "./certs/key.pem"),
 		YouTubeAPIKey: getEnv("YOUTUBE_API_KEY", ""),
+		VideoPlayer:   getEnv("VIDEO_PLAYER", "mpv"),
 	}
 
 	// Flags override env values if provided
@@ -164,7 +168,7 @@ func NewApp(config Config) (*App, error) {
 	hub := websocket.NewHub()
 
 	// Initialize mpv controller
-	mpvCtrl := mpv.NewController()
+	mpvCtrl := mpv.NewController(config.VideoPlayer)
 
 	// Initialize admin manager
 	adminMgr := admin.NewManager(config.AdminPIN)
@@ -229,8 +233,45 @@ func (app *App) setupHandlers() {
 		},
 
 		OnQueueAdd: func(client *websocket.Client, songID string) {
-			// TODO: Fetch song metadata and add to queue
-			log.Printf("Queue add request: %s", songID)
+			log.Printf("Queue add request: %s from %s", songID, client.GetSession().DisplayName)
+
+			// Fetch song from library
+			libSong, err := app.library.GetSong(songID)
+			if err != nil {
+				log.Printf("Failed to get song %s: %v", songID, err)
+				app.hub.SendTo(client, websocket.MsgError, map[string]string{"error": "Song not found"})
+				return
+			}
+
+			// Get user's vocal assist preference
+			vocalAssist := models.VocalOff
+			if sess := client.GetSession(); sess != nil {
+				vocalAssist = sess.VocalAssist
+			}
+
+			// Convert LibrarySong to queue Song
+			song := models.Song{
+				ID:           libSong.ID,
+				Title:        libSong.Title,
+				Artist:       libSong.Artist,
+				Duration:     libSong.Duration,
+				ThumbnailURL: libSong.ThumbnailURL,
+				VideoURL:     libSong.FilePath, // Use file path as video URL
+				VocalPath:    libSong.VocalPath,
+				InstrPath:    libSong.InstrPath,
+				VocalAssist:  vocalAssist,
+				AddedBy:      client.GetSession().MartynKey,
+			}
+
+			// Add to queue
+			if err := app.queue.Add(song); err != nil {
+				log.Printf("Failed to add song to queue: %v", err)
+				app.hub.SendTo(client, websocket.MsgError, map[string]string{"error": "Failed to add to queue"})
+				return
+			}
+
+			log.Printf("Song '%s' added to queue by %s", song.Title, client.GetSession().DisplayName)
+			app.broadcastState()
 		},
 
 		OnQueueRemove: func(client *websocket.Client, songID string) {
@@ -271,10 +312,11 @@ func (app *App) setupHandlers() {
 			app.mpv.SetVolume(volume)
 		},
 
-		OnSetDisplayName: func(client *websocket.Client, name string) {
+		OnSetDisplayName: func(client *websocket.Client, name string, avatarID string) {
 			if sess := client.GetSession(); sess != nil {
-				app.sessions.UpdateDisplayName(sess.MartynKey, name)
+				app.sessions.UpdateProfile(sess.MartynKey, name, avatarID)
 				sess.DisplayName = name
+				sess.AvatarID = avatarID
 				app.broadcastState()
 				app.broadcastClientList()
 			}
@@ -412,9 +454,19 @@ func (app *App) Run() {
 		w.Write([]byte(`{"status":"ok","version":"0.1.0"}`))
 	})
 
+	// Feature flags endpoint (public)
+	mux.HandleFunc("/api/features", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"youtube_enabled": app.config.YouTubeAPIKey != "",
+			"admin_localhost_only": app.admin.IsLocalhostOnly(),
+		})
+	})
+
 	// Admin API endpoints
 	mux.HandleFunc("/api/admin/auth", app.admin.HandleAuth)
 	mux.HandleFunc("/api/admin/check", app.admin.HandleCheckAuth)
+	mux.HandleFunc("/api/admin/set-pin", app.admin.HandleSetPIN) // localhost only
 	mux.HandleFunc("/api/admin/clients", app.admin.Middleware(app.handleAdminClients))
 	mux.HandleFunc("/api/admin/clients/", app.admin.Middleware(app.handleAdminClientAction))
 
@@ -429,9 +481,19 @@ func (app *App) Run() {
 	// YouTube search endpoint
 	mux.HandleFunc("/api/youtube/search", app.handleYouTubeSearch)
 
+	// Song selection logging endpoint (public - called when user selects a song)
+	mux.HandleFunc("/api/library/select", app.handleSongSelection)
+
 	// Search logs endpoints (admin only)
 	mux.HandleFunc("/api/admin/search-logs", app.admin.Middleware(app.handleSearchLogs))
 	mux.HandleFunc("/api/admin/search-stats", app.admin.Middleware(app.handleSearchStats))
+	mux.HandleFunc("/api/admin/song-selections", app.admin.Middleware(app.handleSongSelections))
+
+	// Settings endpoints (admin only)
+	mux.HandleFunc("/api/admin/settings", app.admin.Middleware(app.handleSettings))
+	mux.HandleFunc("/api/admin/system-info", app.admin.Middleware(app.handleSystemInfo))
+	mux.HandleFunc("/api/admin/networks", app.admin.Middleware(app.handleNetworkEnumeration))
+	mux.HandleFunc("/api/connect-url", app.handleConnectURL) // Public - returns selected connection URL
 
 	// Static files (frontend build) with SPA fallback
 	if _, err := os.Stat(app.config.StaticDir); err == nil {
@@ -452,7 +514,20 @@ func (app *App) Run() {
 	log.Printf("HTTP redirect server on http://localhost%s", httpAddr)
 	log.Printf("WebSocket endpoint: wss://localhost%s/ws", httpsAddr)
 	log.Printf("Admin panel: https://localhost%s/admin", httpsAddr)
-	log.Printf("Admin PIN: %s", app.admin.GetPIN())
+
+	// Log admin access mode
+	if app.admin.IsLocalhostOnly() {
+		log.Printf("Admin access: localhost only (no PIN configured)")
+	} else {
+		log.Printf("Admin PIN: %s", app.admin.GetPIN())
+	}
+
+	// Log YouTube status
+	if app.config.YouTubeAPIKey != "" {
+		log.Printf("YouTube search: enabled")
+	} else {
+		log.Printf("YouTube search: disabled (no API key)")
+	}
 
 	// Start HTTP redirect server in background
 	go func() {
@@ -820,6 +895,38 @@ func (app *App) handleLibraryPopular(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(songs)
 }
 
+// handleSongSelection handles POST /api/library/select - logs when a user selects a song
+func (app *App) handleSongSelection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		SongID      string `json:"song_id"`
+		SongTitle   string `json:"song_title"`
+		SongArtist  string `json:"song_artist"`
+		Source      string `json:"source"`
+		SearchQuery string `json:"search_query"`
+		MartynKey   string `json:"martyn_key"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+		return
+	}
+
+	ipAddress := getClientIP(r)
+	if err := app.library.LogSongSelection(req.SongID, req.SongTitle, req.SongArtist, req.Source, req.SearchQuery, req.MartynKey, ipAddress); err != nil {
+		log.Printf("Failed to log song selection: %v", err)
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
 // handleLibraryHistory handles GET /api/library/history?key=martynKey
 func (app *App) handleLibraryHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -929,10 +1036,9 @@ func (app *App) handleYouTubeSearch(w http.ResponseWriter, r *http.Request) {
 
 	// Check if API key is configured
 	if app.config.YouTubeAPIKey == "" {
-		log.Printf("YouTube search requested: %s (API key not configured)", query)
-		w.WriteHeader(http.StatusServiceUnavailable)
+		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": "YouTube API key not configured. Set YOUTUBE_API_KEY env or use -youtube-api-key flag.",
+			"error": "YouTube search is not available",
 		})
 		return
 	}
@@ -1076,6 +1182,29 @@ func (app *App) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(logs)
 }
 
+// handleSongSelections handles GET /api/admin/song-selections
+func (app *App) handleSongSelections(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	source := r.URL.Query().Get("source")
+	selections, err := app.library.GetSongSelections(100, source)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	if selections == nil {
+		selections = []library.SongSelection{}
+	}
+	json.NewEncoder(w).Encode(selections)
+}
+
 // handleSearchStats handles GET /api/admin/search-stats
 func (app *App) handleSearchStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -1098,4 +1227,440 @@ func (app *App) handleSearchStats(w http.ResponseWriter, r *http.Request) {
 		"not_found_count": notFoundCount,
 		"top_not_found":   topQueries,
 	})
+}
+
+// SettingsPayload represents the settings that can be updated
+type SettingsPayload struct {
+	HTTPSPort     string `json:"https_port"`
+	HTTPPort      string `json:"http_port"`
+	AdminPIN      string `json:"admin_pin"`
+	YouTubeAPIKey string `json:"youtube_api_key"`
+	VideoPlayer   string `json:"video_player"`
+	DataDir       string `json:"data_dir"`
+}
+
+// handleSettings handles GET/POST /api/admin/settings
+func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	envPath := ".env"
+
+	switch r.Method {
+	case http.MethodGet:
+		// Return current settings (mask sensitive values for display)
+		settings := SettingsPayload{
+			HTTPSPort:     app.config.Port,
+			HTTPPort:      app.config.HTTPPort,
+			AdminPIN:      app.config.AdminPIN,
+			YouTubeAPIKey: app.config.YouTubeAPIKey,
+			VideoPlayer:   app.config.VideoPlayer,
+			DataDir:       app.config.DataDir,
+		}
+		json.NewEncoder(w).Encode(settings)
+
+	case http.MethodPost:
+		var settings SettingsPayload
+		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+			return
+		}
+
+		// Check if PIN changed - if so, immediately invalidate non-local admin sessions
+		pinChanged := settings.AdminPIN != app.config.AdminPIN
+		if pinChanged {
+			app.admin.SetPIN(settings.AdminPIN)
+			app.config.AdminPIN = settings.AdminPIN
+			log.Printf("Admin PIN changed - all non-local admin sessions have been invalidated")
+		}
+
+		// Build .env content
+		envContent := fmt.Sprintf(`# SongMartyn Configuration
+# Updated via admin panel
+
+HTTPS_PORT=%s
+HTTP_PORT=%s
+ADMIN_PIN=%s
+YOUTUBE_API_KEY=%s
+VIDEO_PLAYER=%s
+DATA_DIR=%s
+TLS_CERT=%s
+TLS_KEY=%s
+`, settings.HTTPSPort, settings.HTTPPort, settings.AdminPIN, settings.YouTubeAPIKey,
+			settings.VideoPlayer, settings.DataDir, app.config.CertFile, app.config.KeyFile)
+
+		// Write .env file
+		if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save settings: " + err.Error()})
+			return
+		}
+
+		message := "Settings saved. Restart the server for changes to take effect."
+		if pinChanged {
+			message = "Settings saved. PIN changed - all non-local admin sessions have been invalidated. Restart server for other changes."
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":      "ok",
+			"message":     message,
+			"pin_changed": pinChanged,
+		})
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// SystemInfo represents system information
+type SystemInfo struct {
+	OS           string  `json:"os"`
+	Arch         string  `json:"arch"`
+	Hostname     string  `json:"hostname"`
+	CPUCount     int     `json:"cpu_count"`
+	MemoryTotal  uint64  `json:"memory_total"`
+	MemoryFree   uint64  `json:"memory_free"`
+	MemoryUsed   uint64  `json:"memory_used"`
+	DiskTotal    uint64  `json:"disk_total"`
+	DiskFree     uint64  `json:"disk_free"`
+	DiskUsed     uint64  `json:"disk_used"`
+	GoVersion    string  `json:"go_version"`
+	ServerUptime string  `json:"server_uptime"`
+	NetworkAddrs []string `json:"network_addrs"`
+}
+
+var serverStartTime = time.Now()
+
+// handleSystemInfo handles GET /api/admin/system-info
+func (app *App) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	hostname, _ := os.Hostname()
+	uptime := time.Since(serverStartTime).Round(time.Second).String()
+
+	info := SystemInfo{
+		OS:           runtime.GOOS,
+		Arch:         runtime.GOARCH,
+		Hostname:     hostname,
+		CPUCount:     runtime.NumCPU(),
+		GoVersion:    runtime.Version(),
+		ServerUptime: uptime,
+		NetworkAddrs: getNetworkAddresses(),
+	}
+
+	// Get memory info (platform-specific)
+	info.MemoryTotal, info.MemoryFree, info.MemoryUsed = getMemoryInfo()
+
+	// Get disk info
+	info.DiskTotal, info.DiskFree, info.DiskUsed = getDiskInfo(app.config.DataDir)
+
+	json.NewEncoder(w).Encode(info)
+}
+
+// getNetworkAddresses returns all network interface addresses
+func getNetworkAddresses() []string {
+	var addrs []string
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return addrs
+	}
+
+	for _, iface := range ifaces {
+		// Skip loopback and down interfaces
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		ifAddrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range ifAddrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Skip IPv6 link-local and loopback
+			if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+				continue
+			}
+
+			addrs = append(addrs, fmt.Sprintf("%s (%s)", ip.String(), iface.Name))
+		}
+	}
+	return addrs
+}
+
+// getMemoryInfo returns memory statistics (cross-platform basic implementation)
+func getMemoryInfo() (total, free, used uint64) {
+	// This is a simplified implementation
+	// For more accurate info, consider using github.com/shirou/gopsutil
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	// These are Go runtime stats, not system-wide
+	// Return what we can
+	used = m.Sys // Total memory obtained from the OS
+	return 0, 0, used
+}
+
+// getDiskInfo returns disk statistics for a given path
+func getDiskInfo(path string) (total, free, used uint64) {
+	// Use syscall for disk info - works on Unix-like systems
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, 0, 0
+	}
+
+	total = stat.Blocks * uint64(stat.Bsize)
+	free = stat.Bavail * uint64(stat.Bsize)
+	used = total - free
+	return
+}
+
+// NetworkInterface represents a network interface with its addresses
+type NetworkInterface struct {
+	Name         string   `json:"name"`
+	DisplayName  string   `json:"display_name"`
+	Type         string   `json:"type"`
+	MacAddress   string   `json:"mac_address"`
+	IPv4         []string `json:"ipv4"`
+	IPv6         []string `json:"ipv6"`
+	IsUp         bool     `json:"is_up"`
+	IsLoopback   bool     `json:"is_loopback"`
+	IsWireless   bool     `json:"is_wireless"`
+	ConnectURLs  []string `json:"connect_urls"`
+}
+
+// handleNetworkEnumeration handles GET /api/admin/networks
+func (app *App) handleNetworkEnumeration(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	var result []NetworkInterface
+	for _, iface := range interfaces {
+		ni := NetworkInterface{
+			Name:       iface.Name,
+			MacAddress: iface.HardwareAddr.String(),
+			IsUp:       iface.Flags&net.FlagUp != 0,
+			IsLoopback: iface.Flags&net.FlagLoopback != 0,
+			IPv4:       []string{},
+			IPv6:       []string{},
+			ConnectURLs: []string{},
+		}
+
+		// Generate display name
+		ni.DisplayName = getInterfaceDisplayName(iface.Name)
+		ni.Type = getInterfaceType(iface.Name)
+		ni.IsWireless = isWirelessInterface(iface.Name)
+
+		// Get addresses
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			if ip == nil || ip.IsLinkLocalUnicast() {
+				continue
+			}
+
+			if ip.To4() != nil {
+				ni.IPv4 = append(ni.IPv4, ip.String())
+				// Generate connect URL for non-loopback IPv4
+				if !ni.IsLoopback {
+					connectURL := fmt.Sprintf("https://%s:%s", ip.String(), app.config.Port)
+					ni.ConnectURLs = append(ni.ConnectURLs, connectURL)
+				}
+			} else {
+				ni.IPv6 = append(ni.IPv6, ip.String())
+			}
+		}
+
+		// Only include interfaces that are up and have addresses
+		if ni.IsUp && (len(ni.IPv4) > 0 || len(ni.IPv6) > 0) {
+			result = append(result, ni)
+		}
+	}
+
+	json.NewEncoder(w).Encode(result)
+}
+
+// getInterfaceDisplayName returns a friendly name for the interface
+func getInterfaceDisplayName(name string) string {
+	// Common interface name patterns
+	switch {
+	case strings.HasPrefix(name, "en"):
+		if strings.HasPrefix(name, "en0") {
+			return "Wi-Fi / Ethernet (Primary)"
+		}
+		return "Ethernet"
+	case strings.HasPrefix(name, "wlan") || strings.HasPrefix(name, "wlp"):
+		return "Wi-Fi"
+	case strings.HasPrefix(name, "eth"):
+		return "Ethernet"
+	case strings.HasPrefix(name, "lo"):
+		return "Loopback"
+	case strings.HasPrefix(name, "docker"):
+		return "Docker Network"
+	case strings.HasPrefix(name, "br-"):
+		return "Bridge Network"
+	case strings.HasPrefix(name, "veth"):
+		return "Virtual Ethernet"
+	case strings.HasPrefix(name, "utun"):
+		return "VPN Tunnel"
+	case strings.HasPrefix(name, "tun") || strings.HasPrefix(name, "tap"):
+		return "VPN"
+	case strings.HasPrefix(name, "awdl"):
+		return "Apple Wireless Direct Link"
+	case strings.HasPrefix(name, "bridge"):
+		return "Network Bridge"
+	default:
+		return name
+	}
+}
+
+// getInterfaceType returns the type of interface
+func getInterfaceType(name string) string {
+	switch {
+	case strings.HasPrefix(name, "wlan") || strings.HasPrefix(name, "wlp"):
+		return "wireless"
+	case strings.HasPrefix(name, "en0") && runtime.GOOS == "darwin":
+		return "wifi_or_ethernet"
+	case strings.HasPrefix(name, "en") || strings.HasPrefix(name, "eth"):
+		return "ethernet"
+	case strings.HasPrefix(name, "lo"):
+		return "loopback"
+	case strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "veth"):
+		return "virtual"
+	case strings.HasPrefix(name, "utun") || strings.HasPrefix(name, "tun") || strings.HasPrefix(name, "tap"):
+		return "vpn"
+	default:
+		return "other"
+	}
+}
+
+// isWirelessInterface checks if the interface is wireless
+func isWirelessInterface(name string) bool {
+	return strings.HasPrefix(name, "wlan") ||
+		strings.HasPrefix(name, "wlp") ||
+		(strings.HasPrefix(name, "en0") && runtime.GOOS == "darwin") // macOS primary is often Wi-Fi
+}
+
+// handleConnectURL handles GET/POST /api/connect-url
+// GET returns the selected connection URL for QR codes
+// POST (admin only) sets the preferred connection URL
+func (app *App) handleConnectURL(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	connectURLFile := filepath.Join(app.config.DataDir, "connect_url.txt")
+
+	switch r.Method {
+	case http.MethodGet:
+		// Return stored URL or auto-detect
+		data, err := os.ReadFile(connectURLFile)
+		if err == nil && len(data) > 0 {
+			json.NewEncoder(w).Encode(map[string]string{"url": strings.TrimSpace(string(data))})
+			return
+		}
+
+		// Auto-detect: find first non-loopback IPv4 address
+		url := app.autoDetectConnectURL()
+		json.NewEncoder(w).Encode(map[string]string{"url": url})
+
+	case http.MethodPost:
+		// Check admin auth for POST
+		if !app.admin.IsAuthorized(r) {
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+			return
+		}
+
+		var req struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+			return
+		}
+
+		// Save to file
+		if err := os.WriteFile(connectURLFile, []byte(req.URL), 0644); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save"})
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "url": req.URL})
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// autoDetectConnectURL finds the best connection URL
+func (app *App) autoDetectConnectURL() string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return fmt.Sprintf("https://localhost:%s", app.config.Port)
+	}
+
+	for _, iface := range interfaces {
+		// Skip loopback and down interfaces
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Only IPv4, non-loopback
+			if ip != nil && ip.To4() != nil && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+				return fmt.Sprintf("https://%s:%s", ip.String(), app.config.Port)
+			}
+		}
+	}
+
+	return fmt.Sprintf("https://localhost:%s", app.config.Port)
 }

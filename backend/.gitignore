@@ -1,1 +1,19 @@
+# TLS certificates
 certs/
+
+# Compiled binary
+songmartyn
+bin/
+
+# Environment file (contains secrets)
+.env
+
+# Database files
+data/*.db
+data/connect_url.txt
+
+# Node modules (if any tooling)
+node_modules/
+
+# Go test cache
+*.test

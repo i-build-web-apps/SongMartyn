@@ -100,6 +100,12 @@ type AdminKickPayload struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+// SetDisplayNamePayload is the payload for setting display name and avatar
+type SetDisplayNamePayload struct {
+	DisplayName string `json:"display_name"`
+	AvatarID    string `json:"avatar_id,omitempty"`
+}
+
 // Hub manages all WebSocket connections (The Nest Hub)
 type Hub struct {
 	clients    map[*Client]bool
@@ -119,7 +125,7 @@ type Hub struct {
 	onSeek           func(client *Client, position float64)
 	onVocalAssist    func(client *Client, level models.VocalAssistLevel)
 	onVolume         func(client *Client, volume float64)
-	onSetDisplayName func(client *Client, name string)
+	onSetDisplayName func(client *Client, name string, avatarID string)
 	onAdminSetAdmin  func(client *Client, martynKey string, isAdmin bool) error
 	onAdminKick      func(client *Client, martynKey string, reason string) error
 	onClientDisconnect func(client *Client)
@@ -318,7 +324,7 @@ type HubHandlers struct {
 	OnSeek             func(client *Client, position float64)
 	OnVocalAssist      func(client *Client, level models.VocalAssistLevel)
 	OnVolume           func(client *Client, volume float64)
-	OnSetDisplayName   func(client *Client, name string)
+	OnSetDisplayName   func(client *Client, name string, avatarID string)
 	OnAdminSetAdmin    func(client *Client, martynKey string, isAdmin bool) error
 	OnAdminKick        func(client *Client, martynKey string, reason string) error
 	OnClientDisconnect func(client *Client)
@@ -470,12 +476,12 @@ func (c *Client) handleMessage(msg Message) {
 		}
 
 	case MsgSetDisplayName:
-		var name string
-		if err := json.Unmarshal(msg.Payload, &name); err != nil {
+		var payload SetDisplayNamePayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 			return
 		}
 		if c.hub.onSetDisplayName != nil {
-			c.hub.onSetDisplayName(c, name)
+			c.hub.onSetDisplayName(c, payload.DisplayName, payload.AvatarID)
 		}
 
 	case MsgAdminSetAdmin:

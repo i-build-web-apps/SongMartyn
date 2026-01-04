@@ -34,6 +34,7 @@ export interface Song {
 export interface Session {
   martyn_key: string;
   display_name: string;
+  avatar_id?: string;
   vocal_assist: VocalAssistLevel;
   search_history: string[];
   current_song_id?: string;

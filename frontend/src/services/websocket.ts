@@ -200,8 +200,8 @@ class WebSocketService {
     this.send('volume', volume);
   }
 
-  setDisplayName(name: string): void {
-    this.send('set_display_name', name);
+  setDisplayName(name: string, avatarId?: string): void {
+    this.send('set_display_name', { display_name: name, avatar_id: avatarId || '' });
   }
 
   // Admin methods

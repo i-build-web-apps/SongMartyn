@@ -43,18 +43,12 @@ func (m *Manager) IsLocalhostOnly() bool {
 	return m.localhostOnly
 }
 
-// generateRandomPIN generates a 6-digit random PIN
-func generateRandomPIN() string {
-	bytes := make([]byte, 3)
-	rand.Read(bytes)
-	// Convert to 6-digit number
-	num := int(bytes[0])<<16 | int(bytes[1])<<8 | int(bytes[2])
-	num = num % 1000000
-	return strings.Repeat("0", 6-len(string(rune(num)))) + string(rune(num))
-}
-
 // GetPIN returns the admin PIN (for display on startup)
+// Returns empty string if localhost-only mode
 func (m *Manager) GetPIN() string {
+	if m.localhostOnly {
+		return ""
+	}
 	return m.pin
 }
 
@@ -104,6 +98,38 @@ func (m *Manager) RevokeToken(token string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.tokens, token)
+}
+
+// SetPIN updates the admin PIN and invalidates all non-local tokens
+// This forces all remote admin users to re-authenticate with the new PIN
+func (m *Manager) SetPIN(newPIN string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.pin = newPIN
+	m.localhostOnly = newPIN == ""
+
+	// Clear all tokens except local ones
+	for token, info := range m.tokens {
+		if info.MartynKey != "local" {
+			delete(m.tokens, token)
+		}
+	}
+}
+
+// RevokeAllNonLocalTokens invalidates all remote admin tokens
+func (m *Manager) RevokeAllNonLocalTokens() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	count := 0
+	for token, info := range m.tokens {
+		if info.MartynKey != "local" {
+			delete(m.tokens, token)
+			count++
+		}
+	}
+	return count
 }
 
 // CleanupExpiredTokens removes expired tokens
@@ -178,6 +204,16 @@ func (m *Manager) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// If localhost-only mode, reject all non-local requests
+		if m.localhostOnly {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(AuthResponse{
+				Success: false,
+				Error:   "Admin access is restricted to localhost only",
+			})
+			return
+		}
+
 		// Check for Bearer token
 		auth := r.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") {
@@ -214,6 +250,17 @@ func (m *Manager) HandleAuth(w http.ResponseWriter, r *http.Request) {
 			Success: true,
 			Token:   token,
 			IsLocal: true,
+		})
+		return
+	}
+
+	// If localhost-only mode, reject remote auth attempts
+	if m.localhostOnly {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(AuthResponse{
+			Success: false,
+			Error:   "Admin access is restricted to localhost only",
+			IsLocal: false,
 		})
 		return
 	}
@@ -255,6 +302,74 @@ func (m *Manager) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		Success: true,
 		Token:   token,
 		IsLocal: false,
+	})
+}
+
+// IsAuthorized checks if a request is authorized (for inline auth checks)
+func (m *Manager) IsAuthorized(r *http.Request) bool {
+	// Localhost is always authorized
+	if IsLocalRequest(r) {
+		return true
+	}
+
+	// If localhost-only mode, non-local requests are not authorized
+	if m.localhostOnly {
+		return false
+	}
+
+	// Check for Bearer token
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
+	}
+
+	token := strings.TrimPrefix(auth, "Bearer ")
+	_, valid := m.ValidateToken(token)
+	return valid
+}
+
+// HandleSetPIN handles PIN update requests (localhost only)
+func (m *Manager) HandleSetPIN(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Only localhost can change the PIN
+	if !IsLocalRequest(r) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(AuthResponse{
+			Success: false,
+			Error:   "Only localhost can change the admin PIN",
+		})
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(AuthResponse{
+			Success: false,
+			Error:   "Method not allowed",
+		})
+		return
+	}
+
+	var req struct {
+		PIN string `json:"pin"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(AuthResponse{
+			Success: false,
+			Error:   "Invalid request",
+		})
+		return
+	}
+
+	m.SetPIN(req.PIN)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":        true,
+		"localhost_only": m.localhostOnly,
+		"message":        "PIN updated, all remote admin sessions have been invalidated",
 	})
 }
 

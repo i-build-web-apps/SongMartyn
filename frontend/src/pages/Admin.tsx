@@ -169,6 +169,8 @@ function ClientList() {
   );
 }
 
+const API_BASE = import.meta.env.DEV ? 'https://localhost:8443' : '';
+
 function LibraryManagement() {
   const { locations, stats, isLoading, error, fetchLocations, fetchStats, addLocation, removeLocation, scanLocation } = useLibraryStore();
   const [showAddForm, setShowAddForm] = useState(false);
@@ -306,188 +308,452 @@ function LibraryManagement() {
   );
 }
 
-function NetworkSettings() {
-  const [ssid, setSsid] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+interface NetworkInterface {
+  name: string;
+  display_name: string;
+  type: string;
+  mac_address: string;
+  ipv4: string[];
+  ipv6: string[];
+  is_up: boolean;
+  is_loopback: boolean;
+  is_wireless: boolean;
+  connect_urls: string[];
+}
 
-  // Load current WiFi settings on mount
+function NetworkSettings() {
+  const [networks, setNetworks] = useState<NetworkInterface[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
+  const [savedUrl, setSavedUrl] = useState<string | null>(null);
+  const [showQRModal, setShowQRModal] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Fetch networks and saved URL when this tab is active
   useEffect(() => {
-    // TODO: Fetch current WiFi settings from backend
+    setIsLoading(true);
+    Promise.all([
+      fetch(`${API_BASE}/api/admin/networks`, { credentials: 'include' }).then(r => r.json()),
+      fetch(`${API_BASE}/api/connect-url`, { credentials: 'include' }).then(r => r.json()),
+    ]).then(([networksData, connectData]) => {
+      setNetworks(networksData || []);
+      const currentUrl = connectData?.url || null;
+      setSavedUrl(currentUrl);
+      setSelectedUrl(currentUrl);
+    }).catch(err => console.error('Failed to load network data:', err))
+      .finally(() => setIsLoading(false));
   }, []);
 
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ssid) return;
-
+  const saveSelectedUrl = async (url: string) => {
     setIsSaving(true);
-    setMessage(null);
-
     try {
-      // TODO: Save WiFi settings to backend
-      // For now, just simulate success
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      setMessage({ type: 'success', text: 'Network settings saved. Device will connect on next restart.' });
-    } catch {
-      setMessage({ type: 'error', text: 'Failed to save network settings.' });
+      const res = await fetch(`${API_BASE}/api/connect-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ url }),
+      });
+      if (res.ok) {
+        setSavedUrl(url);
+        setSelectedUrl(url);
+      }
+    } catch (err) {
+      console.error('Failed to save URL:', err);
     } finally {
       setIsSaving(false);
     }
   };
 
+  const getTypeIcon = (type: string, isWireless: boolean) => {
+    if (isWireless || type === 'wireless' || type === 'wifi_or_ethernet') {
+      return (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
+        </svg>
+      );
+    }
+    if (type === 'ethernet') {
+      return (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+        </svg>
+      );
+    }
+    if (type === 'vpn') {
+      return (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+        </svg>
+      );
+    }
+    return (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+      </svg>
+    );
+  };
+
+  // Simple QR code generator using a data URL approach
+  const generateQRCodeUrl = (url: string) => {
+    // Use a public QR code API for simplicity
+    return `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(url)}`;
+  };
+
   return (
-    <div className="bg-matte-gray rounded-2xl overflow-hidden">
-      <div className="px-6 py-4 border-b border-white/5">
-        <h2 className="text-lg font-semibold text-white">Network Settings</h2>
-        <p className="text-sm text-gray-400">Configure WiFi connection for the karaoke system</p>
-      </div>
-
-      <form onSubmit={handleSave} className="p-6 space-y-4">
-        <div>
-          <label className="block text-sm text-gray-400 mb-1">WiFi Network Name (SSID)</label>
-          <input
-            type="text"
-            value={ssid}
-            onChange={(e) => setSsid(e.target.value)}
-            placeholder="Enter network name"
-            className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
-          />
+    <div className="space-y-6">
+      {/* Network Interfaces */}
+      <div className="bg-matte-gray rounded-2xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-white/5">
+          <h2 className="text-lg font-semibold text-white">Network Interfaces</h2>
+          <p className="text-sm text-gray-400">Available network connections for client access</p>
         </div>
 
-        <div>
-          <label className="block text-sm text-gray-400 mb-1">Password</label>
-          <div className="relative">
-            <input
-              type={showPassword ? 'text' : 'password'}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter WiFi password"
-              className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon pr-12"
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
-            >
-              {showPassword ? (
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                </svg>
-              ) : (
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                </svg>
-              )}
-            </button>
+        {isLoading ? (
+          <div className="p-8 text-center">
+            <div className="inline-flex items-center gap-3 text-gray-400">
+              <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              <span>Enumerating networks...</span>
+            </div>
           </div>
-        </div>
+        ) : networks.filter(n => !n.is_loopback).length === 0 ? (
+          <div className="p-8 text-center text-gray-500">
+            No network interfaces found
+          </div>
+        ) : (
+          <div className="divide-y divide-white/5">
+            {networks.filter(n => !n.is_loopback).map((network) => (
+              <div key={network.name} className="p-4">
+                <div className="flex items-start gap-4">
+                  <div className={`p-2 rounded-lg ${network.is_wireless ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}`}>
+                    {getTypeIcon(network.type, network.is_wireless)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-white font-medium">{network.display_name}</h3>
+                      <span className="text-xs text-gray-500 font-mono">({network.name})</span>
+                      {network.is_up && (
+                        <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-xs rounded">Active</span>
+                      )}
+                    </div>
 
-        {message && (
-          <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-            {message.text}
+                    {/* IPv4 Addresses */}
+                    {network.ipv4.length > 0 && (
+                      <div className="mt-2">
+                        <div className="text-xs text-gray-500 mb-1">IPv4</div>
+                        <div className="flex flex-wrap gap-2">
+                          {network.ipv4.map((ip, i) => (
+                            <span key={i} className="text-white font-mono text-sm bg-matte-black px-2 py-1 rounded">
+                              {ip}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Connection URLs */}
+                    {network.connect_urls.length > 0 && (
+                      <div className="mt-3">
+                        <div className="text-xs text-gray-500 mb-1">Connection URLs</div>
+                        <div className="space-y-2">
+                          {network.connect_urls.map((url, i) => (
+                            <div key={i} className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  setSelectedUrl(url);
+                                  setShowQRModal(true);
+                                }}
+                                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                                  savedUrl === url
+                                    ? 'bg-yellow-neon/20 text-yellow-neon'
+                                    : 'bg-matte-black text-gray-300 hover:text-white'
+                                }`}
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                                </svg>
+                                {url}
+                                {savedUrl === url && (
+                                  <span className="ml-1 text-xs bg-yellow-neon/30 px-1.5 py-0.5 rounded">Default</span>
+                                )}
+                              </button>
+                              {savedUrl !== url && (
+                                <button
+                                  onClick={() => saveSelectedUrl(url)}
+                                  disabled={isSaving}
+                                  className="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 transition-colors disabled:opacity-50"
+                                >
+                                  {isSaving ? '...' : 'Set as Default'}
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* MAC Address */}
+                    {network.mac_address && (
+                      <div className="mt-2 text-xs text-gray-500 font-mono">
+                        MAC: {network.mac_address}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         )}
+      </div>
 
-        <button
-          type="submit"
-          disabled={isSaving || !ssid}
-          className="w-full py-3 bg-yellow-neon text-indigo-deep font-semibold rounded-xl hover:scale-[1.02] transition-transform disabled:opacity-50"
-        >
-          {isSaving ? 'Saving...' : 'Save Network Settings'}
-        </button>
-      </form>
+      {/* QR Code Modal */}
+      {showQRModal && selectedUrl && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80" onClick={() => setShowQRModal(false)}>
+          <div className="bg-matte-gray rounded-2xl p-6 max-w-sm w-full" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Scan to Connect</h3>
+              <button onClick={() => setShowQRModal(false)} className="text-gray-400 hover:text-white">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
 
-      <div className="px-6 pb-6">
-        <div className="p-4 bg-matte-black/50 rounded-xl">
-          <h3 className="text-white font-medium mb-2">QR Code for Guests</h3>
-          <p className="text-sm text-gray-400 mb-3">
-            Display a QR code that guests can scan to connect to the WiFi network and access the karaoke system.
-          </p>
-          <button className="px-4 py-2 bg-blue-500/20 text-blue-400 rounded-lg text-sm font-medium hover:bg-blue-500/30 transition-colors">
-            Generate QR Code
-          </button>
+            <div className="bg-white p-4 rounded-xl mb-4 flex items-center justify-center">
+              <img
+                src={generateQRCodeUrl(selectedUrl)}
+                alt="QR Code"
+                className="w-48 h-48"
+              />
+            </div>
+
+            <div className="text-center">
+              <p className="text-gray-400 text-sm mb-2">Scan with your phone camera</p>
+              <code className="text-yellow-neon text-sm font-mono bg-matte-black px-3 py-2 rounded-lg block overflow-x-auto">
+                {selectedUrl}
+              </code>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Access QR */}
+      <div className="bg-matte-gray rounded-2xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-white/5">
+          <h2 className="text-lg font-semibold text-white">Guest Access QR Code</h2>
+          <p className="text-sm text-gray-400">This QR code will be shown in the app header</p>
+        </div>
+
+        <div className="p-6">
+          {savedUrl ? (
+            <div className="flex items-center gap-4">
+              <div className="bg-white p-3 rounded-xl">
+                <img
+                  src={generateQRCodeUrl(savedUrl)}
+                  alt="QR Code"
+                  className="w-24 h-24"
+                />
+              </div>
+              <div className="flex-1">
+                <p className="text-white font-medium mb-1">Default Connection URL</p>
+                <code className="text-yellow-neon text-sm font-mono">{savedUrl}</code>
+                <p className="text-gray-400 text-sm mt-2">
+                  Click "Set as Default" next to any URL above to change
+                </p>
+                <button
+                  onClick={() => {
+                    setSelectedUrl(savedUrl);
+                    setShowQRModal(true);
+                  }}
+                  className="mt-3 px-4 py-2 bg-yellow-neon text-indigo-deep font-semibold rounded-lg hover:scale-[1.02] transition-transform"
+                >
+                  Show Full QR Code
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center text-gray-500 py-4">
+              No connection URL set. Click "Set as Default" on a URL above.
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
+interface ServerSettings {
+  https_port: string;
+  http_port: string;
+  admin_pin: string;
+  youtube_api_key: string;
+  video_player: string;
+  data_dir: string;
+}
+
+interface SystemInfo {
+  os: string;
+  arch: string;
+  hostname: string;
+  cpu_count: number;
+  memory_total: number;
+  memory_free: number;
+  memory_used: number;
+  disk_total: number;
+  disk_free: number;
+  disk_used: number;
+  go_version: string;
+  server_uptime: string;
+  network_addrs: string[];
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
 function GeneralSettings() {
-  const [adminPin, setAdminPin] = useState('');
-  const [newPin, setNewPin] = useState('');
-  const [confirmPin, setConfirmPin] = useState('');
-  const [autoPlay, setAutoPlay] = useState(true);
-  const [maxQueuePerUser, setMaxQueuePerUser] = useState(3);
+  const [settings, setSettings] = useState<ServerSettings>({
+    https_port: '8443',
+    http_port: '8080',
+    admin_pin: '',
+    youtube_api_key: '',
+    video_player: 'mpv',
+    data_dir: './data',
+  });
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const handleChangePin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!adminPin || !newPin || newPin !== confirmPin) {
-      setMessage({ type: 'error', text: 'Please fill all fields and ensure new PINs match.' });
-      return;
-    }
+  useEffect(() => {
+    Promise.all([
+      fetch(`${API_BASE}/api/admin/settings`, { credentials: 'include' }).then(r => r.json()),
+      fetch(`${API_BASE}/api/admin/system-info`, { credentials: 'include' }).then(r => r.json()),
+    ]).then(([settingsData, sysInfo]) => {
+      setSettings(settingsData);
+      setSystemInfo(sysInfo);
+    }).catch(err => {
+      console.error('Failed to load settings:', err);
+    }).finally(() => {
+      setIsLoading(false);
+    });
+  }, []);
 
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
     setIsSaving(true);
     setMessage(null);
 
     try {
-      // TODO: Change admin PIN via backend API
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      setMessage({ type: 'success', text: 'Admin PIN changed successfully.' });
-      setAdminPin('');
-      setNewPin('');
-      setConfirmPin('');
+      const res = await fetch(`${API_BASE}/api/admin/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(settings),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMessage({ type: 'success', text: data.message || 'Settings saved successfully.' });
+      } else {
+        setMessage({ type: 'error', text: data.error || 'Failed to save settings.' });
+      }
     } catch {
-      setMessage({ type: 'error', text: 'Failed to change PIN. Check current PIN is correct.' });
+      setMessage({ type: 'error', text: 'Failed to save settings.' });
     } finally {
       setIsSaving(false);
     }
   };
 
+  if (isLoading) {
+    return (
+      <div className="bg-matte-gray rounded-2xl p-8 text-center">
+        <div className="text-gray-400">Loading settings...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      {/* Change Admin PIN */}
+      {/* Server Configuration */}
       <div className="bg-matte-gray rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-white/5">
-          <h2 className="text-lg font-semibold text-white">Change Admin PIN</h2>
-          <p className="text-sm text-gray-400">Update the PIN required for admin access</p>
+          <h2 className="text-lg font-semibold text-white">Server Configuration</h2>
+          <p className="text-sm text-gray-400">Changes require server restart to take effect</p>
         </div>
 
-        <form onSubmit={handleChangePin} className="p-6 space-y-4">
+        <form onSubmit={handleSave} className="p-6 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">HTTPS Port</label>
+              <input
+                type="text"
+                value={settings.https_port}
+                onChange={(e) => setSettings({ ...settings, https_port: e.target.value })}
+                placeholder="8443"
+                className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">HTTP Port</label>
+              <input
+                type="text"
+                value={settings.http_port}
+                onChange={(e) => setSettings({ ...settings, http_port: e.target.value })}
+                placeholder="8080"
+                className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
+              />
+            </div>
+          </div>
+
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Current PIN</label>
+            <label className="block text-sm text-gray-400 mb-1">Admin PIN</label>
+            <p className="text-xs text-gray-500 mb-2">Leave empty for localhost-only access</p>
             <input
-              type="password"
-              value={adminPin}
-              onChange={(e) => setAdminPin(e.target.value)}
-              placeholder="Enter current PIN"
+              type="text"
+              value={settings.admin_pin}
+              onChange={(e) => setSettings({ ...settings, admin_pin: e.target.value })}
+              placeholder="Enter PIN for remote admin access"
               className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
             />
           </div>
 
           <div>
-            <label className="block text-sm text-gray-400 mb-1">New PIN</label>
+            <label className="block text-sm text-gray-400 mb-1">YouTube API Key</label>
+            <p className="text-xs text-gray-500 mb-2">Leave empty to disable YouTube search</p>
             <input
-              type="password"
-              value={newPin}
-              onChange={(e) => setNewPin(e.target.value)}
-              placeholder="Enter new PIN"
-              className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
+              type="text"
+              value={settings.youtube_api_key}
+              onChange={(e) => setSettings({ ...settings, youtube_api_key: e.target.value })}
+              placeholder="Enter YouTube Data API v3 key"
+              className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon font-mono text-sm"
             />
           </div>
 
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Confirm New PIN</label>
+            <label className="block text-sm text-gray-400 mb-1">Video Player Path</label>
             <input
-              type="password"
-              value={confirmPin}
-              onChange={(e) => setConfirmPin(e.target.value)}
-              placeholder="Confirm new PIN"
-              className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
+              type="text"
+              value={settings.video_player}
+              onChange={(e) => setSettings({ ...settings, video_player: e.target.value })}
+              placeholder="mpv"
+              className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon font-mono"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Data Directory</label>
+            <input
+              type="text"
+              value={settings.data_dir}
+              onChange={(e) => setSettings({ ...settings, data_dir: e.target.value })}
+              placeholder="./data"
+              className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon font-mono"
             />
           </div>
 
@@ -499,76 +765,98 @@ function GeneralSettings() {
 
           <button
             type="submit"
-            disabled={isSaving || !adminPin || !newPin || !confirmPin}
+            disabled={isSaving}
             className="w-full py-3 bg-yellow-neon text-indigo-deep font-semibold rounded-xl hover:scale-[1.02] transition-transform disabled:opacity-50"
           >
-            {isSaving ? 'Changing...' : 'Change PIN'}
+            {isSaving ? 'Saving...' : 'Save Settings'}
           </button>
         </form>
       </div>
 
-      {/* Queue Settings */}
-      <div className="bg-matte-gray rounded-2xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-white/5">
-          <h2 className="text-lg font-semibold text-white">Queue Settings</h2>
-          <p className="text-sm text-gray-400">Configure how the song queue behaves</p>
-        </div>
-
-        <div className="p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-white font-medium">Auto-play next song</h3>
-              <p className="text-sm text-gray-400">Automatically play the next song when one ends</p>
-            </div>
-            <button
-              onClick={() => setAutoPlay(!autoPlay)}
-              className={`relative w-12 h-6 rounded-full transition-colors ${autoPlay ? 'bg-yellow-neon' : 'bg-matte-black'}`}
-            >
-              <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${autoPlay ? 'left-7' : 'left-1'}`} />
-            </button>
-          </div>
-
-          <div>
-            <label className="block text-white font-medium mb-1">Max songs per user in queue</label>
-            <p className="text-sm text-gray-400 mb-2">Limit how many songs each user can have queued at once</p>
-            <select
-              value={maxQueuePerUser}
-              onChange={(e) => setMaxQueuePerUser(Number(e.target.value))}
-              className="w-full px-4 py-3 bg-matte-black rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-yellow-neon"
-            >
-              <option value={1}>1 song</option>
-              <option value={2}>2 songs</option>
-              <option value={3}>3 songs</option>
-              <option value={5}>5 songs</option>
-              <option value={10}>10 songs</option>
-              <option value={0}>Unlimited</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* System Info */}
+      {/* System Information */}
       <div className="bg-matte-gray rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-white/5">
           <h2 className="text-lg font-semibold text-white">System Information</h2>
         </div>
 
-        <div className="p-6 space-y-3">
-          <div className="flex justify-between">
-            <span className="text-gray-400">Version</span>
-            <span className="text-white font-mono">0.1.0</span>
+        {systemInfo && (
+          <div className="p-6 space-y-4">
+            {/* Basic Info */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-matte-black/50 rounded-xl p-4">
+                <div className="text-gray-400 text-sm mb-1">Operating System</div>
+                <div className="text-white font-medium">{systemInfo.os} ({systemInfo.arch})</div>
+              </div>
+              <div className="bg-matte-black/50 rounded-xl p-4">
+                <div className="text-gray-400 text-sm mb-1">Hostname</div>
+                <div className="text-white font-medium">{systemInfo.hostname}</div>
+              </div>
+              <div className="bg-matte-black/50 rounded-xl p-4">
+                <div className="text-gray-400 text-sm mb-1">CPU Cores</div>
+                <div className="text-white font-medium">{systemInfo.cpu_count}</div>
+              </div>
+              <div className="bg-matte-black/50 rounded-xl p-4">
+                <div className="text-gray-400 text-sm mb-1">Server Uptime</div>
+                <div className="text-white font-medium">{systemInfo.server_uptime}</div>
+              </div>
+            </div>
+
+            {/* Disk Usage */}
+            {systemInfo.disk_total > 0 && (
+              <div className="bg-matte-black/50 rounded-xl p-4">
+                <div className="flex justify-between mb-2">
+                  <span className="text-gray-400 text-sm">Disk Usage</span>
+                  <span className="text-white text-sm">{formatBytes(systemInfo.disk_used)} / {formatBytes(systemInfo.disk_total)}</span>
+                </div>
+                <div className="w-full h-2 bg-matte-black rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-yellow-neon"
+                    style={{ width: `${(systemInfo.disk_used / systemInfo.disk_total) * 100}%` }}
+                  />
+                </div>
+                <div className="text-gray-500 text-xs mt-1">{formatBytes(systemInfo.disk_free)} free</div>
+              </div>
+            )}
+
+            {/* Memory Usage */}
+            {systemInfo.memory_used > 0 && (
+              <div className="bg-matte-black/50 rounded-xl p-4">
+                <div className="text-gray-400 text-sm mb-1">Go Runtime Memory</div>
+                <div className="text-white font-medium">{formatBytes(systemInfo.memory_used)}</div>
+              </div>
+            )}
+
+            {/* Network Addresses */}
+            {systemInfo.network_addrs && systemInfo.network_addrs.length > 0 && (
+              <div className="bg-matte-black/50 rounded-xl p-4">
+                <div className="text-gray-400 text-sm mb-2">Network Addresses</div>
+                <div className="space-y-1">
+                  {systemInfo.network_addrs.map((addr, i) => (
+                    <div key={i} className="text-white font-mono text-sm">{addr}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Version Info */}
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-400">Server Version</span>
+              <span className="text-white font-mono">0.1.0</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-400">Go Version</span>
+              <span className="text-white font-mono">{systemInfo.go_version}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-400">Server URL</span>
+              <span className="text-white font-mono text-sm">{window.location.origin}</span>
+            </div>
           </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Server URL</span>
-            <span className="text-white font-mono text-sm">{window.location.origin}</span>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
 }
-
-const API_BASE = import.meta.env.DEV ? 'https://localhost:8443' : '';
 
 function SearchLogs() {
   const [logs, setLogs] = useState<SearchLogEntry[]>([]);

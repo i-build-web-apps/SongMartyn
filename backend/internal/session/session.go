@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
+	"songmartyn/internal/names"
 	"songmartyn/pkg/models"
 )
 
@@ -133,7 +134,12 @@ func (m *Manager) GetOrCreate(martynKey, displayName string) *models.Session {
 	// Create new session
 	newKey := uuid.New().String()
 	if displayName == "" {
-		displayName = "Singer " + newKey[:4]
+		// Generate a unique funny singer name
+		existingNames := make(map[string]bool)
+		for _, s := range m.sessions {
+			existingNames[s.DisplayName] = true
+		}
+		displayName = names.GenerateUniqueSingerName(existingNames)
 	}
 
 	session := &models.Session{
@@ -273,6 +279,11 @@ func (m *Manager) SetAdmin(martynKey string, isAdmin bool) error {
 
 // UpdateDisplayName updates a session's display name
 func (m *Manager) UpdateDisplayName(martynKey, displayName string) error {
+	return m.UpdateProfile(martynKey, displayName, "")
+}
+
+// UpdateProfile updates a session's display name and avatar
+func (m *Manager) UpdateProfile(martynKey, displayName, avatarID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -282,6 +293,9 @@ func (m *Manager) UpdateDisplayName(martynKey, displayName string) error {
 	}
 
 	session.DisplayName = displayName
+	if avatarID != "" {
+		session.AvatarID = avatarID
+	}
 	session.LastSeenAt = time.Now()
 	return m.saveSession(session)
 }

@@ -39,6 +39,7 @@ type Song struct {
 type Session struct {
 	MartynKey      string           `json:"martyn_key"` // UUID
 	DisplayName    string           `json:"display_name"`
+	AvatarID       string           `json:"avatar_id,omitempty"` // Pixel avatar identifier
 	VocalAssist    VocalAssistLevel `json:"vocal_assist"`
 	SearchHistory  []string         `json:"search_history"`
 	CurrentSongID  string           `json:"current_song_id,omitempty"`

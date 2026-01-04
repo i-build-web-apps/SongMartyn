@@ -18,6 +18,7 @@ type Controller struct {
 	conn       *mpvipc.Connection
 	cmd        *exec.Cmd
 	socketPath string
+	executable string
 	mu         sync.RWMutex
 
 	// Callbacks
@@ -26,10 +27,15 @@ type Controller struct {
 }
 
 // NewController creates a new mpv controller
-func NewController() *Controller {
+// executable is the path to the mpv binary (default: "mpv")
+func NewController(executable string) *Controller {
 	socketPath := getSocketPath()
+	if executable == "" {
+		executable = "mpv"
+	}
 	return &Controller{
 		socketPath: socketPath,
+		executable: executable,
 	}
 }
 
@@ -50,7 +56,7 @@ func (c *Controller) Start() error {
 	os.Remove(c.socketPath)
 
 	// Start mpv with required options
-	c.cmd = exec.Command("mpv",
+	c.cmd = exec.Command(c.executable,
 		"--idle=yes",
 		"--force-window=yes",
 		"--keep-open=yes",

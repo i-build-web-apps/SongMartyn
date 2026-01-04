@@ -1,0 +1,76 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-ssr/
+*.local
+
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+backend/songmartyn
+backend/bin/
+
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
+
+# Certificates (generated locally)
+certs/
+*.pem
+
+# Database files (local data)
+*.db
+backend/data/*.db
+backend/data/connect_url.txt
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# IDE/Editor files
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swp
+*.swo
+*~
+
+# Testing
+.playwright-mcp/
+coverage/
+*.test.js.map
+
+# Claude/AI tool files
+.claude/
+
+# Media files (user content)
+songs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp

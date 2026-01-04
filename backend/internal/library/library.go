@@ -105,9 +105,23 @@ func (m *Manager) initDB() error {
 		searched_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS song_selections (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		song_id TEXT NOT NULL,
+		song_title TEXT NOT NULL,
+		song_artist TEXT DEFAULT '',
+		source TEXT NOT NULL,
+		search_query TEXT DEFAULT '',
+		martyn_key TEXT DEFAULT '',
+		ip_address TEXT DEFAULT '',
+		selected_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_search_logs_query ON search_logs(query);
 	CREATE INDEX IF NOT EXISTS idx_search_logs_source ON search_logs(source);
 	CREATE INDEX IF NOT EXISTS idx_search_logs_searched_at ON search_logs(searched_at);
+	CREATE INDEX IF NOT EXISTS idx_song_selections_song_id ON song_selections(song_id);
+	CREATE INDEX IF NOT EXISTS idx_song_selections_source ON song_selections(source);
 	`
 
 	_, err := m.db.Exec(schema)
@@ -448,6 +462,69 @@ func (m *Manager) LogSearch(query, source string, resultsCount int, martynKey, i
 		VALUES (?, ?, ?, ?, ?)
 	`, query, source, resultsCount, martynKey, ipAddress)
 	return err
+}
+
+// LogSongSelection logs when a user selects a song from search results
+func (m *Manager) LogSongSelection(songID, songTitle, songArtist, source, searchQuery, martynKey, ipAddress string) error {
+	_, err := m.db.Exec(`
+		INSERT INTO song_selections (song_id, song_title, song_artist, source, search_query, martyn_key, ip_address)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, songID, songTitle, songArtist, source, searchQuery, martynKey, ipAddress)
+	return err
+}
+
+// SongSelection represents a logged song selection
+type SongSelection struct {
+	ID          int64  `json:"id"`
+	SongID      string `json:"song_id"`
+	SongTitle   string `json:"song_title"`
+	SongArtist  string `json:"song_artist"`
+	Source      string `json:"source"`
+	SearchQuery string `json:"search_query"`
+	MartynKey   string `json:"martyn_key"`
+	IPAddress   string `json:"ip_address"`
+	SelectedAt  string `json:"selected_at"`
+}
+
+// GetSongSelections returns recent song selections
+func (m *Manager) GetSongSelections(limit int, source string) ([]SongSelection, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	var rows *sql.Rows
+	var err error
+
+	if source != "" {
+		rows, err = m.db.Query(`
+			SELECT id, song_id, song_title, song_artist, source, search_query, martyn_key, ip_address, selected_at
+			FROM song_selections
+			WHERE source = ?
+			ORDER BY selected_at DESC
+			LIMIT ?
+		`, source, limit)
+	} else {
+		rows, err = m.db.Query(`
+			SELECT id, song_id, song_title, song_artist, source, search_query, martyn_key, ip_address, selected_at
+			FROM song_selections
+			ORDER BY selected_at DESC
+			LIMIT ?
+		`, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var selections []SongSelection
+	for rows.Next() {
+		var s SongSelection
+		if err := rows.Scan(&s.ID, &s.SongID, &s.SongTitle, &s.SongArtist, &s.Source, &s.SearchQuery, &s.MartynKey, &s.IPAddress, &s.SelectedAt); err != nil {
+			return nil, err
+		}
+		selections = append(selections, s)
+	}
+	return selections, nil
 }
 
 // SearchLog represents a logged search
