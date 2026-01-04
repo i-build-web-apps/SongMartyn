@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { LibrarySong, SongHistory } from '../types';
+import { wsService } from '../services/websocket';
 
 const API_BASE = import.meta.env.DEV ? 'https://localhost:8443' : '';
 
@@ -229,9 +230,7 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
       }),
     }).catch(err => console.error('Failed to log song selection:', err));
 
-    // This will be handled via WebSocket
-    // For now, we'll dispatch a custom event that the websocket service can listen to
-    const event = new CustomEvent('songmartyn:queue_add', { detail: song });
-    window.dispatchEvent(event);
+    // Send queue_add via WebSocket
+    wsService.queueAdd(String(song.id));
   },
 }));
