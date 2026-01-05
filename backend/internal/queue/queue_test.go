@@ -532,6 +532,106 @@ func TestRequeue(t *testing.T) {
 	}
 }
 
+func TestRequeueWhenExhausted(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	// Add a song and skip past it (exhaust the queue)
+	manager.Add(createTestSong("song1", "Song One", "Artist A", "user1"))
+	manager.Skip() // Move position past the only song
+
+	state := manager.GetState()
+	if state.Position != 1 {
+		t.Fatalf("Expected position 1 after skip, got %d", state.Position)
+	}
+
+	// Queue should be exhausted (position >= len(songs))
+	if state.Position < len(state.Songs) {
+		t.Fatal("Queue should be exhausted")
+	}
+
+	// Requeue the song - it should become the next playable song
+	err = manager.Requeue("song1", "user2")
+	if err != nil {
+		t.Fatalf("Requeue failed: %v", err)
+	}
+
+	state = manager.GetState()
+
+	// After requeue, the new song should be at the current position (upcoming, not history)
+	if len(state.Songs) != 2 {
+		t.Errorf("Expected 2 songs after requeue, got %d", len(state.Songs))
+	}
+
+	// Position should now point to the new song
+	if state.Position != 1 {
+		t.Errorf("Expected position 1 after requeue, got %d", state.Position)
+	}
+
+	// The song at position should be the requeued one (by user2)
+	if state.Position < len(state.Songs) && state.Songs[state.Position].AddedBy != "user2" {
+		t.Error("Requeued song should be at current position")
+	}
+
+	// Original should be in history (position 0, which is < current position 1)
+	if state.Songs[0].AddedBy != "user1" {
+		t.Error("Original song should still be in history")
+	}
+}
+
+func TestRequeueOrderCollision(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	// Add multiple songs
+	manager.Add(createTestSong("song1", "Song One", "Artist", "user1"))
+	manager.Add(createTestSong("song2", "Song Two", "Artist", "user1"))
+	manager.Add(createTestSong("song3", "Song Three", "Artist", "user1"))
+
+	// Remove the middle song to create a gap in queue_order
+	manager.Remove("song2")
+
+	// Requeue song1 - should get a unique queue_order, not collide with song3
+	err = manager.Requeue("song1", "user2")
+	if err != nil {
+		t.Fatalf("Requeue failed: %v", err)
+	}
+
+	state := manager.GetState()
+	if len(state.Songs) != 3 {
+		t.Errorf("Expected 3 songs after requeue, got %d", len(state.Songs))
+	}
+
+	// All songs should have unique IDs
+	ids := make(map[string]bool)
+	for _, song := range state.Songs {
+		if ids[song.ID] {
+			t.Errorf("Duplicate song ID found: %s", song.ID)
+		}
+		ids[song.ID] = true
+	}
+}
+
 func TestOnChange(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
 	if err != nil {

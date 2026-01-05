@@ -363,6 +363,9 @@ func (m *Manager) Requeue(songID string, newAddedBy string) error {
 		return nil // Song not found, silently ignore
 	}
 
+	// Check if queue was exhausted before adding
+	wasExhausted := m.position >= len(m.songs)
+
 	// Create a new song entry with a unique ID
 	newSong := songCopy
 	newSong.AddedBy = newAddedBy
@@ -372,9 +375,20 @@ func (m *Manager) Requeue(songID string, newAddedBy string) error {
 	// This ensures a new database entry is created
 	newSong.ID = songID + "_" + newSong.AddedAt.Format("20060102150405.000")
 
+	// Get max queue_order to avoid collisions with existing entries
+	var maxOrder int
+	row := m.db.QueryRow(`SELECT COALESCE(MAX(queue_order), -1) FROM queue`)
+	row.Scan(&maxOrder)
+
 	// Add to end of queue
 	m.songs = append(m.songs, newSong)
-	err := m.saveSong(newSong, len(m.songs)-1)
+	err := m.saveSong(newSong, maxOrder+1)
+
+	// If the queue was exhausted, set position to the new song so it's playable
+	if wasExhausted {
+		m.position = len(m.songs) - 1
+		m.savePosition()
+	}
 
 	onChange := m.onChange
 	m.mu.Unlock()
