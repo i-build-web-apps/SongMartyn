@@ -90,6 +90,14 @@ export function UserSettings({ isOpen, onClose }: UserSettingsProps) {
         <div className="mb-6">
           <label className="block text-sm font-medium text-gray-400 mb-2">
             Display Name
+            {session?.name_locked && (
+              <span className="ml-2 text-yellow-neon text-xs">
+                <svg className="w-3 h-3 inline mr-1" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                </svg>
+                Locked by admin
+              </span>
+            )}
           </label>
           <input
             type="text"
@@ -97,10 +105,15 @@ export function UserSettings({ isOpen, onClose }: UserSettingsProps) {
             onChange={(e) => setDisplayName(e.target.value)}
             placeholder="Enter your singer name..."
             maxLength={32}
-            className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
+            disabled={session?.name_locked}
+            className={`w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon ${
+              session?.name_locked ? 'opacity-50 cursor-not-allowed' : ''
+            }`}
           />
           <p className="text-xs text-gray-500 mt-2">
-            This name will be shown when you add songs to the queue
+            {session?.name_locked
+              ? 'Your name has been set by an administrator and cannot be changed'
+              : 'This name will be shown when you add songs to the queue'}
           </p>
         </div>
 

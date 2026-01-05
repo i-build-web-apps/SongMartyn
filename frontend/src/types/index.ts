@@ -69,6 +69,7 @@ export interface Session {
   is_admin: boolean;
   is_online: boolean;
   is_afk: boolean;
+  name_locked: boolean;
 }
 
 // Client info for admin display
@@ -83,6 +84,7 @@ export interface ClientInfo {
   is_blocked: boolean;
   block_reason?: string;
   avatar_config?: AvatarConfig;
+  name_locked: boolean;
 }
 
 // Player state
@@ -167,6 +169,8 @@ export type MessageType =
   | 'admin_set_afk'
   | 'admin_play_next'
   | 'admin_stop'
+  | 'admin_set_name'
+  | 'admin_set_name_lock'
   | 'welcome'
   | 'state_update'
   | 'search_result'

@@ -76,6 +76,7 @@ type Session struct {
 	IsAdmin        bool             `json:"is_admin"`
 	IsOnline       bool             `json:"is_online"`       // Currently connected
 	IsAFK          bool             `json:"is_afk"`          // Away from keyboard
+	NameLocked     bool             `json:"name_locked"`     // Admin locked the display name
 }
 
 // PlayerState represents the current playback state

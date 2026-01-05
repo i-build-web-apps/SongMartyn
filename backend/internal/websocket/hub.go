@@ -44,13 +44,15 @@ const (
 	MsgSetAFK         MessageType = "set_afk"         // Set AFK status
 
 	// Admin messages (Client -> Server)
-	MsgAdminSetAdmin  MessageType = "admin_set_admin"  // Promote/demote user to admin
-	MsgAdminKick      MessageType = "admin_kick"       // Kick a user
-	MsgAdminBlock     MessageType = "admin_block"      // Block a user
-	MsgAdminUnblock   MessageType = "admin_unblock"    // Unblock a user
-	MsgAdminSetAFK    MessageType = "admin_set_afk"    // Set user's AFK status
-	MsgAdminPlayNext  MessageType = "admin_play_next"  // Start next song now (skip countdown)
-	MsgAdminStop      MessageType = "admin_stop"       // Stop playback and enter pending mode
+	MsgAdminSetAdmin    MessageType = "admin_set_admin"     // Promote/demote user to admin
+	MsgAdminKick        MessageType = "admin_kick"          // Kick a user
+	MsgAdminBlock       MessageType = "admin_block"         // Block a user
+	MsgAdminUnblock     MessageType = "admin_unblock"       // Unblock a user
+	MsgAdminSetAFK      MessageType = "admin_set_afk"       // Set user's AFK status
+	MsgAdminPlayNext    MessageType = "admin_play_next"     // Start next song now (skip countdown)
+	MsgAdminStop        MessageType = "admin_stop"          // Stop playback and enter pending mode
+	MsgAdminSetName     MessageType = "admin_set_name"      // Change user's display name
+	MsgAdminSetNameLock MessageType = "admin_set_name_lock" // Lock/unlock user's name
 
 	// Server -> Client
 	MsgWelcome      MessageType = "welcome"       // Session restored/created
@@ -133,6 +135,18 @@ type AdminSetAFKPayload struct {
 	IsAFK     bool   `json:"is_afk"`
 }
 
+// AdminSetNamePayload is the payload for changing a user's display name
+type AdminSetNamePayload struct {
+	MartynKey   string `json:"martyn_key"`
+	DisplayName string `json:"display_name"`
+}
+
+// AdminSetNameLockPayload is the payload for locking/unlocking a user's name
+type AdminSetNameLockPayload struct {
+	MartynKey string `json:"martyn_key"`
+	Locked    bool   `json:"locked"`
+}
+
 // SetDisplayNamePayload is the payload for setting display name and avatar
 type SetDisplayNamePayload struct {
 	DisplayName  string              `json:"display_name"`
@@ -185,6 +199,8 @@ type Hub struct {
 	onAdminSetAFK      func(client *Client, martynKey string, isAFK bool) error
 	onAdminPlayNext    func(client *Client) error
 	onAdminStop        func(client *Client) error
+	onAdminSetName     func(client *Client, martynKey string, displayName string) error
+	onAdminSetNameLock func(client *Client, martynKey string, locked bool) error
 	onClientDisconnect func(client *Client)
 }
 
@@ -377,6 +393,8 @@ func (h *Hub) SetHandlers(handlers HubHandlers) {
 	h.onAdminSetAFK = handlers.OnAdminSetAFK
 	h.onAdminPlayNext = handlers.OnAdminPlayNext
 	h.onAdminStop = handlers.OnAdminStop
+	h.onAdminSetName = handlers.OnAdminSetName
+	h.onAdminSetNameLock = handlers.OnAdminSetNameLock
 	h.onClientDisconnect = handlers.OnClientDisconnect
 }
 
@@ -406,6 +424,8 @@ type HubHandlers struct {
 	OnAdminSetAFK      func(client *Client, martynKey string, isAFK bool) error
 	OnAdminPlayNext    func(client *Client) error
 	OnAdminStop        func(client *Client) error
+	OnAdminSetName     func(client *Client, martynKey string, displayName string) error
+	OnAdminSetNameLock func(client *Client, martynKey string, locked bool) error
 	OnClientDisconnect func(client *Client)
 }
 
@@ -735,6 +755,46 @@ func (c *Client) handleMessage(msg Message) {
 		}
 		if c.hub.onAdminStop != nil {
 			if err := c.hub.onAdminStop(c); err != nil {
+				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+			}
+		}
+
+	case MsgAdminSetName:
+		// Check if client is admin
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		var payload AdminSetNamePayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return
+		}
+		if payload.MartynKey == "" || payload.DisplayName == "" {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Missing martyn_key or display_name"})
+			return
+		}
+		if c.hub.onAdminSetName != nil {
+			if err := c.hub.onAdminSetName(c, payload.MartynKey, payload.DisplayName); err != nil {
+				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+			}
+		}
+
+	case MsgAdminSetNameLock:
+		// Check if client is admin
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		var payload AdminSetNameLockPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return
+		}
+		if payload.MartynKey == "" {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Missing martyn_key"})
+			return
+		}
+		if c.hub.onAdminSetNameLock != nil {
+			if err := c.hub.onAdminSetNameLock(c, payload.MartynKey, payload.Locked); err != nil {
 				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
 			}
 		}

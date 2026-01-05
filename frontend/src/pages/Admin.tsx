@@ -8,6 +8,7 @@ import { wsService } from '../services/websocket';
 import type { ClientInfo, LibraryLocation, AvatarConfig, BGMSourceType, IcecastStream } from '../types';
 import { HelpModal, HelpButton, useHelpModal } from '../components/HelpModal';
 import { buildAvatarUrl } from '../components/AvatarCreator';
+import { Footer } from '../components/Footer';
 
 type AdminTab = 'clients' | 'queue' | 'library' | 'search-logs' | 'network' | 'settings';
 
@@ -240,12 +241,109 @@ function KickBlockModal({ client, onClose }: {
   );
 }
 
-function ClientRow({ client, onToggleAdmin, onToggleAFK, onAction, onUnblock }: {
+function EditNameModal({ client, onClose }: {
+  client: ClientInfo;
+  onClose: () => void;
+}) {
+  const { setClientName, setClientNameLock } = useAdminStore();
+  const [newName, setNewName] = useState(client.display_name);
+  const [lockName, setLockName] = useState(client.name_locked);
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const handleSubmit = async () => {
+    setIsProcessing(true);
+
+    // Update name if changed
+    if (newName !== client.display_name) {
+      await setClientName(client.martyn_key, newName);
+    }
+
+    // Update lock status if changed
+    if (lockName !== client.name_locked) {
+      await setClientNameLock(client.martyn_key, lockName);
+    }
+
+    setIsProcessing(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80" onClick={onClose}>
+      <div className="bg-matte-gray rounded-2xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-white">Edit User Name</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* User Info */}
+        <div className="bg-matte-black rounded-xl p-3 mb-4">
+          <div className="flex items-center gap-3">
+            <ClientAvatar config={client.avatar_config} size={40} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${client.is_online ? 'bg-green-400' : 'bg-gray-500'}`} />
+                <span className="text-white font-medium truncate">{client.display_name}</span>
+              </div>
+              <div className="text-gray-400 text-sm truncate">{client.device_name} - {client.ip_address}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Name Input */}
+        <div className="mb-4">
+          <label className="block text-sm text-gray-400 mb-2">Display Name</label>
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Enter new name"
+            className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
+          />
+        </div>
+
+        {/* Lock Toggle */}
+        <div className="mb-6">
+          <label className="flex items-center gap-3 cursor-pointer">
+            <div
+              className={`relative w-12 h-6 rounded-full transition-colors ${lockName ? 'bg-yellow-neon' : 'bg-matte-black'}`}
+              onClick={() => setLockName(!lockName)}
+            >
+              <div className={`absolute w-5 h-5 bg-white rounded-full top-0.5 transition-transform ${lockName ? 'translate-x-6' : 'translate-x-0.5'}`} />
+            </div>
+            <div>
+              <span className="text-white font-medium">Lock Name</span>
+              <p className="text-sm text-gray-400">
+                {lockName ? 'User cannot change their name' : 'User can change their own name'}
+              </p>
+            </div>
+          </label>
+        </div>
+
+        {/* Submit Button */}
+        <button
+          onClick={handleSubmit}
+          disabled={isProcessing || !newName.trim()}
+          className="w-full py-3 font-semibold rounded-xl transition-colors disabled:opacity-50 bg-yellow-neon text-indigo-deep hover:bg-yellow-400"
+        >
+          {isProcessing ? 'Saving...' : 'Save Changes'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ClientRow({ client, onToggleAdmin, onToggleAFK, onAction, onUnblock, onEditName, onToggleNameLock }: {
   client: ClientInfo;
   onToggleAdmin: () => void;
   onToggleAFK: () => void;
   onAction: () => void;
   onUnblock: () => void;
+  onEditName: () => void;
+  onToggleNameLock: () => void;
 }) {
   return (
     <tr className={`border-b border-white/5 ${client.is_blocked ? 'bg-red-500/5' : ''}`}>
@@ -258,6 +356,28 @@ function ClientRow({ client, onToggleAdmin, onToggleAFK, onAction, onUnblock }: 
               client.is_online ? 'bg-green-400' : 'bg-gray-500'
             }`} />
             <span className="text-white font-medium truncate">{client.display_name}</span>
+            {client.name_locked && (
+              <button
+                onClick={onToggleNameLock}
+                className="p-1 text-yellow-neon hover:text-yellow-400 transition-colors flex-shrink-0"
+                title="Name is locked - click to unlock"
+              >
+                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                </svg>
+              </button>
+            )}
+            {!client.is_blocked && (
+              <button
+                onClick={onEditName}
+                className="p-1 text-gray-500 hover:text-cyan-400 transition-colors flex-shrink-0"
+                title="Edit name"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+              </button>
+            )}
             {client.is_afk && !client.is_blocked && (
               <span className="px-2 py-0.5 bg-orange-500/20 text-orange-400 text-xs rounded flex-shrink-0">
                 AFK
@@ -324,8 +444,9 @@ function ClientRow({ client, onToggleAdmin, onToggleAFK, onAction, onUnblock }: 
 }
 
 function ClientList() {
-  const { clients, setAdminStatus, setAFKStatus, unblockClient } = useAdminStore();
+  const { clients, setAdminStatus, setAFKStatus, unblockClient, setClientNameLock } = useAdminStore();
   const [modalClient, setModalClient] = useState<ClientInfo | null>(null);
+  const [editNameClient, setEditNameClient] = useState<ClientInfo | null>(null);
 
   const handleToggleAdmin = async (client: ClientInfo) => {
     await setAdminStatus(client.martyn_key, !client.is_admin);
@@ -339,6 +460,10 @@ function ClientList() {
     if (confirm(`Unblock ${client.display_name}?`)) {
       await unblockClient(client.martyn_key);
     }
+  };
+
+  const handleToggleNameLock = async (client: ClientInfo) => {
+    await setClientNameLock(client.martyn_key, !client.name_locked);
   };
 
   const onlineClients = clients.filter((c) => c.is_online && !c.is_blocked);
@@ -383,6 +508,8 @@ function ClientList() {
                     onToggleAFK={() => handleToggleAFK(client)}
                     onAction={() => setModalClient(client)}
                     onUnblock={() => handleUnblock(client)}
+                    onEditName={() => setEditNameClient(client)}
+                    onToggleNameLock={() => handleToggleNameLock(client)}
                   />
                 ))
               )}
@@ -395,6 +522,13 @@ function ClientList() {
         <KickBlockModal
           client={modalClient}
           onClose={() => setModalClient(null)}
+        />
+      )}
+
+      {editNameClient && (
+        <EditNameModal
+          client={editNameClient}
+          onClose={() => setEditNameClient(null)}
         />
       )}
     </>
@@ -2532,7 +2666,7 @@ export function Admin() {
       </nav>
 
       {/* Main content */}
-      <main className="p-6 max-w-4xl mx-auto">
+      <main className="p-6 max-w-4xl mx-auto pb-10">
         {activeTab === 'clients' && <ClientList />}
         {activeTab === 'queue' && <QueueManagement />}
         {activeTab === 'library' && <LibraryManagement />}
@@ -2540,6 +2674,8 @@ export function Admin() {
         {activeTab === 'network' && <NetworkSettings />}
         {activeTab === 'settings' && <GeneralSettings />}
       </main>
+
+      <Footer />
     </div>
   );
 }

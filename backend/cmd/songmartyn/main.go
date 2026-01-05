@@ -672,6 +672,40 @@ func (app *App) setupHandlers() {
 			return nil
 		},
 
+		OnAdminSetName: func(client *websocket.Client, martynKey string, displayName string) error {
+			log.Printf("Admin %s changed name for %s to '%s'",
+				client.GetSession().MartynKey[:8], martynKey[:8], displayName)
+			if err := app.sessions.AdminSetDisplayName(martynKey, displayName); err != nil {
+				return err
+			}
+			// Update live session if online
+			if targetClient := app.hub.FindClientByMartynKey(martynKey); targetClient != nil {
+				if targetSess := targetClient.GetSession(); targetSess != nil {
+					targetSess.DisplayName = displayName
+				}
+			}
+			app.broadcastState()
+			app.broadcastClientList()
+			return nil
+		},
+
+		OnAdminSetNameLock: func(client *websocket.Client, martynKey string, locked bool) error {
+			log.Printf("Admin %s set name lock for %s to %v",
+				client.GetSession().MartynKey[:8], martynKey[:8], locked)
+			if err := app.sessions.SetNameLocked(martynKey, locked); err != nil {
+				return err
+			}
+			// Update live session if online
+			if targetClient := app.hub.FindClientByMartynKey(martynKey); targetClient != nil {
+				if targetSess := targetClient.GetSession(); targetSess != nil {
+					targetSess.NameLocked = locked
+				}
+			}
+			app.broadcastState()
+			app.broadcastClientList()
+			return nil
+		},
+
 		OnClientDisconnect: func(client *websocket.Client) {
 			if sess := client.GetSession(); sess != nil {
 				app.sessions.SetOnline(sess.MartynKey, false)

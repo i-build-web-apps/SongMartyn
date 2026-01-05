@@ -53,6 +53,7 @@ func NewManager(dbPath string) (*Manager, error) {
 	db.Exec(`ALTER TABLE sessions ADD COLUMN user_agent TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN is_admin INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN avatar_config TEXT DEFAULT ''`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN name_locked INTEGER DEFAULT 0`)
 
 	// Create blocked_users table
 	_, err = db.Exec(`
@@ -87,7 +88,7 @@ func (m *Manager) loadSessions() error {
 		       current_song_id, connected_at, last_seen_at,
 		       COALESCE(ip_address, ''), COALESCE(device_name, ''),
 		       COALESCE(user_agent, ''), COALESCE(is_admin, 0),
-		       COALESCE(avatar_config, '')
+		       COALESCE(avatar_config, ''), COALESCE(name_locked, 0)
 		FROM sessions
 	`)
 	if err != nil {
@@ -100,7 +101,7 @@ func (m *Manager) loadSessions() error {
 		var searchHistoryJSON string
 		var currentSongID sql.NullString
 		var connectedAt, lastSeenAt string
-		var isAdmin int
+		var isAdmin, nameLocked int
 		var avatarConfigJSON string
 
 		err := rows.Scan(
@@ -116,6 +117,7 @@ func (m *Manager) loadSessions() error {
 			&session.UserAgent,
 			&isAdmin,
 			&avatarConfigJSON,
+			&nameLocked,
 		)
 		if err != nil {
 			continue
@@ -128,6 +130,7 @@ func (m *Manager) loadSessions() error {
 		session.ConnectedAt, _ = time.Parse(time.RFC3339, connectedAt)
 		session.LastSeenAt, _ = time.Parse(time.RFC3339, lastSeenAt)
 		session.IsAdmin = isAdmin == 1
+		session.NameLocked = nameLocked == 1
 
 		// Load avatar config from JSON
 		if avatarConfigJSON != "" {
@@ -305,6 +308,11 @@ func (m *Manager) saveSession(session *models.Session) error {
 		isAdmin = 1
 	}
 
+	nameLocked := 0
+	if session.NameLocked {
+		nameLocked = 1
+	}
+
 	// Serialize avatar config to JSON
 	avatarConfigJSON := ""
 	if session.AvatarConfig != nil {
@@ -317,8 +325,8 @@ func (m *Manager) saveSession(session *models.Session) error {
 		INSERT OR REPLACE INTO sessions
 		(martyn_key, display_name, vocal_assist, search_history,
 		 current_song_id, connected_at, last_seen_at,
-		 ip_address, device_name, user_agent, is_admin, avatar_config)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ip_address, device_name, user_agent, is_admin, avatar_config, name_locked)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		session.MartynKey,
 		session.DisplayName,
@@ -332,6 +340,7 @@ func (m *Manager) saveSession(session *models.Session) error {
 		session.UserAgent,
 		isAdmin,
 		avatarConfigJSON,
+		nameLocked,
 	)
 	return err
 }
@@ -371,12 +380,12 @@ func (m *Manager) SetAFK(martynKey string, isAFK bool) error {
 	return m.saveSession(session)
 }
 
-// UpdateDisplayName updates a session's display name
+// UpdateDisplayName updates a session's display name (respects name lock)
 func (m *Manager) UpdateDisplayName(martynKey, displayName string) error {
 	return m.UpdateProfile(martynKey, displayName, "")
 }
 
-// UpdateProfile updates a session's display name and avatar
+// UpdateProfile updates a session's display name and avatar (respects name lock)
 func (m *Manager) UpdateProfile(martynKey, displayName, avatarID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -386,10 +395,55 @@ func (m *Manager) UpdateProfile(martynKey, displayName, avatarID string) error {
 		return nil
 	}
 
-	session.DisplayName = displayName
+	// Only update name if not locked (users can still change avatar)
+	if !session.NameLocked && displayName != "" {
+		session.DisplayName = displayName
+	}
 	if avatarID != "" {
 		session.AvatarID = avatarID
 	}
+	session.LastSeenAt = time.Now()
+	return m.saveSession(session)
+}
+
+// IsNameLocked returns whether a session's name is locked
+func (m *Manager) IsNameLocked(martynKey string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	session, ok := m.sessions[martynKey]
+	if !ok {
+		return false
+	}
+	return session.NameLocked
+}
+
+// SetNameLocked sets the name lock status for a session (admin only)
+func (m *Manager) SetNameLocked(martynKey string, locked bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[martynKey]
+	if !ok {
+		return nil
+	}
+
+	session.NameLocked = locked
+	session.LastSeenAt = time.Now()
+	return m.saveSession(session)
+}
+
+// AdminSetDisplayName sets a user's display name (admin bypass, ignores lock)
+func (m *Manager) AdminSetDisplayName(martynKey, displayName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[martynKey]
+	if !ok {
+		return nil
+	}
+
+	session.DisplayName = displayName
 	session.LastSeenAt = time.Now()
 	return m.saveSession(session)
 }

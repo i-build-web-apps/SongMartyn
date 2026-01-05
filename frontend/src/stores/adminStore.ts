@@ -26,6 +26,8 @@ interface AdminStore {
   kickClient: (martynKey: string, reason?: string) => Promise<boolean>;
   blockClient: (martynKey: string, durationMinutes: number, reason?: string) => Promise<boolean>;
   unblockClient: (martynKey: string) => Promise<boolean>;
+  setClientName: (martynKey: string, displayName: string) => Promise<boolean>;
+  setClientNameLock: (martynKey: string, locked: boolean) => Promise<boolean>;
 }
 
 export const useAdminStore = create<AdminStore>((set, get) => ({
@@ -164,6 +166,24 @@ export const useAdminStore = create<AdminStore>((set, get) => ({
   unblockClient: async (martynKey: string) => {
     try {
       wsService.adminUnblock(martynKey);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  setClientName: async (martynKey: string, displayName: string) => {
+    try {
+      wsService.adminSetName(martynKey, displayName);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  setClientNameLock: async (martynKey: string, locked: boolean) => {
+    try {
+      wsService.adminSetNameLock(martynKey, locked);
       return true;
     } catch {
       return false;

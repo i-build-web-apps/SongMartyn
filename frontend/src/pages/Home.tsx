@@ -7,6 +7,7 @@ import { NowPlaying } from '../components/NowPlaying';
 import { Search } from '../components/Search';
 import { UserSettings } from '../components/UserSettings';
 import { StatusBar } from '../components/StatusBar';
+import { Footer } from '../components/Footer';
 
 function BlockedPage({ reason }: { reason: string }) {
   return (
@@ -113,6 +114,8 @@ export function Home() {
 
       {/* AFK Modal - shown when user is away */}
       {session?.is_afk && <AFKModal onReturn={handleReturnFromAFK} />}
+
+      <Footer />
     </div>
   );
 }

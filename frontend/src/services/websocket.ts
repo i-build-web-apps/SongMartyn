@@ -275,6 +275,14 @@ class WebSocketService {
     this.send('admin_stop', null);
   }
 
+  adminSetName(martynKey: string, displayName: string): void {
+    this.send('admin_set_name', { martyn_key: martynKey, display_name: displayName });
+  }
+
+  adminSetNameLock(martynKey: string, locked: boolean): void {
+    this.send('admin_set_name_lock', { martyn_key: martynKey, locked });
+  }
+
   // Disconnect
   disconnect(): void {
     if (this.ws) {
