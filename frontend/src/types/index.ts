@@ -30,11 +30,33 @@ export interface Song {
   added_at: string;
 }
 
+// Avatar custom colors (optional overrides)
+export interface AvatarColors {
+  env?: string;   // Background color
+  clo?: string;   // Clothes primary color
+  head?: string;  // Skin color
+  mouth?: string; // Mouth color
+  eyes?: string;  // Eyes primary color
+  top?: string;   // Hair/top color
+}
+
+// Avatar configuration
+export interface AvatarConfig {
+  env: number;
+  clo: number;
+  head: number;
+  mouth: number;
+  eyes: number;
+  top: number;
+  colors?: AvatarColors; // Optional custom colors
+}
+
 // Session (The Martyn Handshake)
 export interface Session {
   martyn_key: string;
   display_name: string;
   avatar_id?: string;
+  avatar_config?: AvatarConfig;
   vocal_assist: VocalAssistLevel;
   search_history: string[];
   current_song_id?: string;
@@ -46,6 +68,7 @@ export interface Session {
   user_agent: string;
   is_admin: boolean;
   is_online: boolean;
+  is_afk: boolean;
 }
 
 // Client info for admin display
@@ -56,6 +79,10 @@ export interface ClientInfo {
   ip_address: string;
   is_admin: boolean;
   is_online: boolean;
+  is_afk: boolean;
+  is_blocked: boolean;
+  block_reason?: string;
+  avatar_config?: AvatarConfig;
 }
 
 // Player state
@@ -67,12 +94,43 @@ export interface PlayerState {
   volume: number;
   vocal_assist: VocalAssistLevel;
   bgm_active: boolean;
+  bgm_enabled: boolean;
+}
+
+// BGM (Background Music) settings
+export type BGMSourceType = 'youtube' | 'icecast';
+
+export interface BGMSettings {
+  enabled: boolean;
+  source_type: BGMSourceType;
+  url: string;
+  volume: number;
+}
+
+// Icecast stream for BGM
+export interface IcecastStream {
+  name: string;
+  url: string;
+  genre: string;
+  description: string;
+  bitrate: number;
+  format: string;
 }
 
 // Queue state
 export interface QueueState {
   songs: Song[];
   position: number;
+  autoplay: boolean;
+}
+
+// Countdown state (inter-song countdown)
+export interface CountdownState {
+  active: boolean;
+  seconds_remaining: number;
+  next_song_id: string;
+  next_singer_key: string;
+  requires_approval: boolean;
 }
 
 // Room state (full sync)
@@ -80,6 +138,7 @@ export interface RoomState {
   player: PlayerState;
   queue: QueueState;
   sessions: Session[];
+  countdown: CountdownState;
 }
 
 // WebSocket message types
@@ -88,6 +147,11 @@ export type MessageType =
   | 'search'
   | 'queue_add'
   | 'queue_remove'
+  | 'queue_move'
+  | 'queue_clear'
+  | 'queue_shuffle'
+  | 'queue_requeue'
+  | 'set_afk'
   | 'play'
   | 'pause'
   | 'skip'
@@ -95,8 +159,14 @@ export type MessageType =
   | 'vocal_assist'
   | 'volume'
   | 'set_display_name'
+  | 'autoplay'
   | 'admin_set_admin'
   | 'admin_kick'
+  | 'admin_block'
+  | 'admin_unblock'
+  | 'admin_set_afk'
+  | 'admin_play_next'
+  | 'admin_stop'
   | 'welcome'
   | 'state_update'
   | 'search_result'
@@ -137,6 +207,12 @@ export interface AdminSetAdminPayload {
 
 export interface AdminKickPayload {
   martyn_key: string;
+  reason?: string;
+}
+
+export interface AdminBlockPayload {
+  martyn_key: string;
+  duration: number; // Duration in minutes (0 = permanent)
   reason?: string;
 }
 

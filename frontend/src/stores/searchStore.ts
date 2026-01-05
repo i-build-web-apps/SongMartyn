@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import type { LibrarySong, SongHistory } from '../types';
+import type { LibrarySong, SongHistory, VocalAssistLevel } from '../types';
 import { wsService } from '../services/websocket';
+import { useRoomStore } from './roomStore';
 
 const API_BASE = import.meta.env.DEV ? 'https://localhost:8443' : '';
 
@@ -85,7 +86,7 @@ interface SearchStore {
   fetchHistory: () => Promise<void>;
   openSearch: () => void;
   closeSearch: () => void;
-  addToQueue: (song: LibrarySong) => void;
+  addToQueue: (song: LibrarySong, vocalAssist?: VocalAssistLevel) => void;
 }
 
 const getMartynKey = (): string | null => {
@@ -211,7 +212,20 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
     set({ isOpen: false, query: '', results: [], youtubeResults: [] });
   },
 
-  addToQueue: (song: LibrarySong) => {
+  addToQueue: (song: LibrarySong, vocalAssist?: VocalAssistLevel) => {
+    const roomStore = useRoomStore.getState();
+
+    // Check if song is already in the "up next" portion of the queue (not history)
+    const upNextSongs = roomStore.queue.songs.slice(roomStore.queue.position);
+    const isInQueue = upNextSongs.some(
+      (s) => s.id === String(song.id)
+    );
+
+    if (isInQueue) {
+      roomStore.addNotification('warning', `"${song.title}" is already in the queue`);
+      return;
+    }
+
     // Log the song selection
     const { query, activeTab } = get();
     const source = activeTab === 'youtube' ? 'youtube' : 'library';
@@ -230,7 +244,10 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
       }),
     }).catch(err => console.error('Failed to log song selection:', err));
 
-    // Send queue_add via WebSocket
-    wsService.queueAdd(String(song.id));
+    // Send queue_add via WebSocket with vocal assist level
+    wsService.queueAdd(String(song.id), vocalAssist);
+
+    // Show notification
+    roomStore.addNotification('success', `Added "${song.title}" to queue`);
   },
 }));

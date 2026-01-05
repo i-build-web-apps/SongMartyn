@@ -27,6 +27,15 @@ var supportedExtensions = map[string]bool{
 	".webm": true,
 	".mkv":  true,
 	".avi":  true,
+	".cdg":  true, // CD+G karaoke graphics
+}
+
+// Audio extensions that can pair with CDG
+var audioExtensions = map[string]bool{
+	".mp3": true,
+	".wav": true,
+	".ogg": true,
+	".m4a": true,
 }
 
 // Manager handles the song library
@@ -71,6 +80,8 @@ func (m *Manager) initDB() error {
 		thumbnail_url TEXT DEFAULT '',
 		vocal_path TEXT DEFAULT '',
 		instr_path TEXT DEFAULT '',
+		cdg_path TEXT DEFAULT '',
+		audio_path TEXT DEFAULT '',
 		library_id INTEGER NOT NULL,
 		times_sung INTEGER DEFAULT 0,
 		last_sung_at DATETIME,
@@ -203,7 +214,8 @@ func (m *Manager) ScanLocation(id int64) (int, error) {
 		return 0, err
 	}
 
-	count := 0
+	// First pass: collect all files by directory
+	dirFiles := make(map[string][]string)
 	err = filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip errors
@@ -217,33 +229,119 @@ func (m *Manager) ScanLocation(id int64) (int, error) {
 			return nil
 		}
 
-		// Generate ID from file path
-		hash := md5.Sum([]byte(filePath))
-		songID := hex.EncodeToString(hash[:])
-
-		// Parse title and artist from filename
-		title, artist := parseFilename(filePath)
-
-		// Insert or update song
-		_, err = m.db.Exec(`
-			INSERT INTO library_songs (id, title, artist, file_path, library_id)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET
-				title = excluded.title,
-				artist = excluded.artist,
-				file_path = excluded.file_path
-		`, songID, title, artist, filePath, id)
-		if err != nil {
-			log.Printf("Error adding song %s: %v", filePath, err)
-			return nil
-		}
-
-		count++
+		dir := filepath.Dir(filePath)
+		dirFiles[dir] = append(dirFiles[dir], filePath)
 		return nil
 	})
 
 	if err != nil {
-		return count, err
+		return 0, err
+	}
+
+	count := 0
+	// Process each directory
+	for _, files := range dirFiles {
+		// Look for CDG files and their paired audio
+		cdgFiles := make(map[string]string) // base name -> cdg path
+		audioFiles := make(map[string]string) // base name -> audio path
+		otherFiles := []string{}
+
+		for _, filePath := range files {
+			ext := strings.ToLower(filepath.Ext(filePath))
+			base := strings.TrimSuffix(filepath.Base(filePath), ext)
+
+			if ext == ".cdg" {
+				cdgFiles[base] = filePath
+			} else if audioExtensions[ext] {
+				audioFiles[base] = filePath
+			} else {
+				otherFiles = append(otherFiles, filePath)
+			}
+		}
+
+		// Process CDG+Audio pairs
+		for base, cdgPath := range cdgFiles {
+			audioPath, hasAudio := audioFiles[base]
+			if !hasAudio {
+				// Try to find audio with similar name
+				for audioBase, ap := range audioFiles {
+					if strings.HasPrefix(audioBase, base) || strings.HasPrefix(base, audioBase) {
+						audioPath = ap
+						hasAudio = true
+						delete(audioFiles, audioBase)
+						break
+					}
+				}
+			} else {
+				delete(audioFiles, base)
+			}
+
+			if hasAudio {
+				// CDG + Audio pair found
+				hash := md5.Sum([]byte(cdgPath))
+				songID := hex.EncodeToString(hash[:])
+				title, artist := parseFilename(cdgPath)
+
+				_, err = m.db.Exec(`
+					INSERT INTO library_songs (id, title, artist, file_path, cdg_path, audio_path, library_id)
+					VALUES (?, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(id) DO UPDATE SET
+						title = excluded.title,
+						artist = excluded.artist,
+						file_path = excluded.file_path,
+						cdg_path = excluded.cdg_path,
+						audio_path = excluded.audio_path
+				`, songID, title, artist, cdgPath, cdgPath, audioPath, id)
+				if err != nil {
+					log.Printf("Error adding CDG song %s: %v", cdgPath, err)
+				} else {
+					count++
+					log.Printf("Added CDG+Audio pair: %s", base)
+				}
+			}
+		}
+
+		// Process remaining audio files (not paired with CDG)
+		for _, audioPath := range audioFiles {
+			hash := md5.Sum([]byte(audioPath))
+			songID := hex.EncodeToString(hash[:])
+			title, artist := parseFilename(audioPath)
+
+			_, err = m.db.Exec(`
+				INSERT INTO library_songs (id, title, artist, file_path, library_id)
+				VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(id) DO UPDATE SET
+					title = excluded.title,
+					artist = excluded.artist,
+					file_path = excluded.file_path
+			`, songID, title, artist, audioPath, id)
+			if err != nil {
+				log.Printf("Error adding song %s: %v", audioPath, err)
+			} else {
+				count++
+			}
+		}
+
+		// Process other media files (video, etc.)
+		for _, filePath := range otherFiles {
+			hash := md5.Sum([]byte(filePath))
+			songID := hex.EncodeToString(hash[:])
+			title, artist := parseFilename(filePath)
+
+			_, err = m.db.Exec(`
+				INSERT INTO library_songs (id, title, artist, file_path, library_id)
+				VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(id) DO UPDATE SET
+					title = excluded.title,
+					artist = excluded.artist,
+					file_path = excluded.file_path
+			`, songID, title, artist, filePath, id)
+			if err != nil {
+				log.Printf("Error adding song %s: %v", filePath, err)
+			} else {
+				count++
+			}
+		}
 	}
 
 	// Update location stats
@@ -285,7 +383,7 @@ func (m *Manager) SearchSongs(query string, limit int) ([]models.LibrarySong, er
 	searchTerm := "%" + query + "%"
 	rows, err := m.db.Query(`
 		SELECT id, title, artist, album, duration, file_path, thumbnail_url,
-		       vocal_path, instr_path, library_id, times_sung, last_sung_at, last_sung_by, added_at
+		       vocal_path, instr_path, cdg_path, audio_path, library_id, times_sung, last_sung_at, last_sung_by, added_at
 		FROM library_songs
 		WHERE title LIKE ? OR artist LIKE ? OR album LIKE ?
 		ORDER BY times_sung DESC, title ASC
@@ -304,7 +402,7 @@ func (m *Manager) SearchSongs(query string, limit int) ([]models.LibrarySong, er
 		if err := rows.Scan(
 			&song.ID, &song.Title, &song.Artist, &song.Album, &song.Duration,
 			&song.FilePath, &song.ThumbnailURL, &song.VocalPath, &song.InstrPath,
-			&song.LibraryID, &song.TimesSung, &lastSungAt, &lastSungBy, &song.AddedAt,
+			&song.CDGPath, &song.AudioPath, &song.LibraryID, &song.TimesSung, &lastSungAt, &lastSungBy, &song.AddedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -326,12 +424,12 @@ func (m *Manager) GetSong(id string) (*models.LibrarySong, error) {
 	var lastSungBy sql.NullString
 	err := m.db.QueryRow(`
 		SELECT id, title, artist, album, duration, file_path, thumbnail_url,
-		       vocal_path, instr_path, library_id, times_sung, last_sung_at, last_sung_by, added_at
+		       vocal_path, instr_path, cdg_path, audio_path, library_id, times_sung, last_sung_at, last_sung_by, added_at
 		FROM library_songs WHERE id = ?
 	`, id).Scan(
 		&song.ID, &song.Title, &song.Artist, &song.Album, &song.Duration,
 		&song.FilePath, &song.ThumbnailURL, &song.VocalPath, &song.InstrPath,
-		&song.LibraryID, &song.TimesSung, &lastSungAt, &lastSungBy, &song.AddedAt,
+		&song.CDGPath, &song.AudioPath, &song.LibraryID, &song.TimesSung, &lastSungAt, &lastSungBy, &song.AddedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -411,7 +509,7 @@ func (m *Manager) GetPopularSongs(limit int) ([]models.LibrarySong, error) {
 
 	rows, err := m.db.Query(`
 		SELECT id, title, artist, album, duration, file_path, thumbnail_url,
-		       vocal_path, instr_path, library_id, times_sung, last_sung_at, last_sung_by, added_at
+		       vocal_path, instr_path, cdg_path, audio_path, library_id, times_sung, last_sung_at, last_sung_by, added_at
 		FROM library_songs
 		WHERE times_sung > 0
 		ORDER BY times_sung DESC
@@ -430,7 +528,7 @@ func (m *Manager) GetPopularSongs(limit int) ([]models.LibrarySong, error) {
 		if err := rows.Scan(
 			&song.ID, &song.Title, &song.Artist, &song.Album, &song.Duration,
 			&song.FilePath, &song.ThumbnailURL, &song.VocalPath, &song.InstrPath,
-			&song.LibraryID, &song.TimesSung, &lastSungAt, &lastSungBy, &song.AddedAt,
+			&song.CDGPath, &song.AudioPath, &song.LibraryID, &song.TimesSung, &lastSungAt, &lastSungBy, &song.AddedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -624,6 +722,37 @@ func (m *Manager) GetSearchStats() (totalSearches, uniqueQueries, notFoundCount 
 func (m *Manager) ClearSearchLogs() error {
 	_, err := m.db.Exec("DELETE FROM search_logs")
 	return err
+}
+
+// ClearSongHistory clears all song play history
+func (m *Manager) ClearSongHistory() error {
+	_, err := m.db.Exec("DELETE FROM song_history")
+	if err != nil {
+		return err
+	}
+	// Also reset play counts
+	_, err = m.db.Exec("UPDATE library_songs SET play_count = 0, last_played = NULL")
+	return err
+}
+
+// ClearSongSelections clears all song selection logs
+func (m *Manager) ClearSongSelections() error {
+	_, err := m.db.Exec("DELETE FROM song_selections")
+	return err
+}
+
+// GetSearchLogCount returns the number of search logs
+func (m *Manager) GetSearchLogCount() int {
+	var count int
+	m.db.QueryRow("SELECT COUNT(*) FROM search_logs").Scan(&count)
+	return count
+}
+
+// GetSongHistoryCount returns the number of song history entries
+func (m *Manager) GetSongHistoryCount() int {
+	var count int
+	m.db.QueryRow("SELECT COUNT(*) FROM song_history").Scan(&count)
+	return count
 }
 
 // Close closes the database connection

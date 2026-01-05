@@ -1,0 +1,438 @@
+package avatar
+
+// Theme color definitions - auto-generated from multiavatar.js
+// Each theme has 3 color variants (A, B, C) with colors for each part
+
+type PartColors struct {
+	Env   []string
+	Clo   []string
+	Head  []string
+	Mouth []string
+	Eyes  []string
+	Top   []string
+}
+
+type ThemeVariants struct {
+	A PartColors
+	B PartColors
+	C PartColors
+}
+
+var Themes = map[string]ThemeVariants{
+	"00": {
+		A: PartColors{
+			Env:   []string{"#ff2f2b"},
+			Clo:   []string{"#fff", "#000"},
+			Head:  []string{"#fff"},
+			Mouth: []string{"#fff", "#000", "#000"},
+			Eyes:  []string{"#000", "none", "#00FFFF"},
+			Top:   []string{"#fff", "#fff"},
+		},
+		B: PartColors{
+			Env:   []string{"#ff1ec1"},
+			Clo:   []string{"#000", "#fff"},
+			Head:  []string{"#ffc1c1"},
+			Mouth: []string{"#fff", "#000", "#000"},
+			Eyes:  []string{"#FF2D00", "#fff", "none"},
+			Top:   []string{"#a21d00", "#fff"},
+		},
+		C: PartColors{
+			Env:   []string{"#0079b1"},
+			Clo:   []string{"#0e00b1", "#d1fffe"},
+			Head:  []string{"#f5aa77"},
+			Mouth: []string{"#fff", "#000", "#000"},
+			Eyes:  []string{"#0c00de", "#fff", "none"},
+			Top:   []string{"#acfffd", "#acfffd"},
+		},
+	},
+	"01": {
+		A: PartColors{
+			Env:   []string{"#a50000"},
+			Clo:   []string{"#f06", "#8e0039"},
+			Head:  []string{"#85492C"},
+			Mouth: []string{"#000"},
+			Eyes:  []string{"#000", "#ff9809"},
+			Top:   []string{"#ff9809", "#ff9809", "none", "none"},
+		},
+		B: PartColors{
+			Env:   []string{"#40E83B"},
+			Clo:   []string{"#00650b", "#62ce5a"},
+			Head:  []string{"#f7c1a6"},
+			Mouth: []string{"#6e1c1c"},
+			Eyes:  []string{"#000", "#ff833b"},
+			Top:   []string{"#67FFCC", "none", "none", "#ecff3b"},
+		},
+		C: PartColors{
+			Env:   []string{"#ff2c2c"},
+			Clo:   []string{"#fff", "#000"},
+			Head:  []string{"#ffce8b"},
+			Mouth: []string{"#000"},
+			Eyes:  []string{"#000", "#0072ff"},
+			Top:   []string{"#ff9809", "none", "#ffc809", "none"},
+		},
+	},
+	"02": {
+		A: PartColors{
+			Env:   []string{"#ff7520"},
+			Clo:   []string{"#d12823"},
+			Head:  []string{"#fee3c5"},
+			Mouth: []string{"#d12823"},
+			Eyes:  []string{"#000", "none"},
+			Top:   []string{"#000", "none", "none", "#FFCC00", "red"},
+		},
+		B: PartColors{
+			Env:   []string{"#ff9700"},
+			Clo:   []string{"#000"},
+			Head:  []string{"#d2ad6d"},
+			Mouth: []string{"#000"},
+			Eyes:  []string{"#000", "#00ffdc"},
+			Top:   []string{"#fdff00", "#fdff00", "none", "none", "none"},
+		},
+		C: PartColors{
+			Env:   []string{"#26a7ff"},
+			Clo:   []string{"#d85cd7"},
+			Head:  []string{"#542e02"},
+			Mouth: []string{"#f70014"},
+			Eyes:  []string{"#000", "magenta"},
+			Top:   []string{"#FFCC00", "#FFCC00", "#FFCC00", "#ff0000", "yellow"},
+		},
+	},
+	"03": {
+		A: PartColors{
+			Env:   []string{"#6FC30E"},
+			Clo:   []string{"#b4e1fa", "#5b5d6e", "#515262", "#a0d2f0", "#a0d2f0"},
+			Head:  []string{"#fae3b9"},
+			Mouth: []string{"#fff", "#000"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#8eff45", "#8eff45", "none", "none"},
+		},
+		B: PartColors{
+			Env:   []string{"#00a58c"},
+			Clo:   []string{"#000", "none", "none", "none", "none"},
+			Head:  []string{"#FAD2B9"},
+			Mouth: []string{"#fff", "#000"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#FFC600", "none", "#FFC600", "none"},
+		},
+		C: PartColors{
+			Env:   []string{"#ff501f"},
+			Clo:   []string{"#000", "#ff0000", "#ff0000", "#7d7d7d", "#7d7d7d"},
+			Head:  []string{"#fff3dc"},
+			Mouth: []string{"#d2001b", "none"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#D2001B", "none", "none", "#D2001B"},
+		},
+	},
+	"04": {
+		A: PartColors{
+			Env:   []string{"#fc0"},
+			Clo:   []string{"#901e0e", "#ffbe1e", "#ffbe1e", "#c55f54"},
+			Head:  []string{"#f8d9ad"},
+			Mouth: []string{"#000", "none", "#000", "none"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#48362D", "#AF892E", "#674C43", "#282828"},
+		},
+		B: PartColors{
+			Env:   []string{"#386465"},
+			Clo:   []string{"#fff", "#333", "#333", "#333"},
+			Head:  []string{"#FFD79D"},
+			Mouth: []string{"#000", "#000", "#000", "#000"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#27363C", "#5DCAD4", "#314652", "#333"},
+		},
+		C: PartColors{
+			Env:   []string{"#DFFF00"},
+			Clo:   []string{"#304267", "#aab0b1", "#aab0b1", "#aab0b1"},
+			Head:  []string{"#e6b876"},
+			Mouth: []string{"#50230a", "#50230a", "#50230a", "#50230a"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#333", "#afafaf", "#222", "#6d3a1d"},
+		},
+	},
+	"05": {
+		A: PartColors{
+			Env:   []string{"#c7b810"},
+			Clo:   []string{"#c7d4e2", "#435363", "#435363", "#141720", "#141720", "#e7ecf2", "#e7ecf2"},
+			Head:  []string{"#f5d4a6"},
+			Mouth: []string{"#000", "#cf9f76"},
+			Eyes:  []string{"#000", "#000", "#000", "#000", "#000", "#000", "#fff", "#fff", "#fff", "#fff", "#000", "#000"},
+			Top:   []string{"none", "#fdff00"},
+		},
+		B: PartColors{
+			Env:   []string{"#b3003e"},
+			Clo:   []string{"#000", "#435363", "#435363", "#000", "none", "#e7ecf2", "#e7ecf2"},
+			Head:  []string{"#f5d4a6"},
+			Mouth: []string{"#000", "#af9f94"},
+			Eyes:  []string{"#9ff3ff;opacity:0.96", "#000", "#9ff3ff;opacity:0.96", "#000", "#2f508a", "#000", "#000", "#000", "none", "none", "none", "none"},
+			Top:   []string{"#ff9a00", "#ff9a00"},
+		},
+		C: PartColors{
+			Env:   []string{"#884f00"},
+			Clo:   []string{"#ff0000", "#fff", "#fff", "#141720", "#141720", "#e7ecf2", "#e7ecf2"},
+			Head:  []string{"#c57b14"},
+			Mouth: []string{"#000", "#cf9f76"},
+			Eyes:  []string{"none", "#000", "none", "#000", "#5a0000", "#000", "#000", "#000", "none", "none", "none", "none"},
+			Top:   []string{"#efefef", "none"},
+		},
+	},
+	"06": {
+		A: PartColors{
+			Env:   []string{"#8acf00"},
+			Clo:   []string{"#ee2829", "#ff0"},
+			Head:  []string{"#ffce73"},
+			Mouth: []string{"#fff", "#000"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#000", "#000", "none", "#000", "#ff4e4e", "#000"},
+		},
+		B: PartColors{
+			Env:   []string{"#00d2a3"},
+			Clo:   []string{"#0D0046", "#ffce73"},
+			Head:  []string{"#ffce73"},
+			Mouth: []string{"#000", "none"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#000", "#000", "#000", "none", "#ffb358", "#000", "none", "none"},
+		},
+		C: PartColors{
+			Env:   []string{"#C13D5C"},
+			Clo:   []string{"#000", "none"},
+			Head:  []string{"#ffce73"},
+			Mouth: []string{"#ff0000", "none"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"none", "none", "none", "none", "none", "#ffc107", "none", "none"},
+		},
+	},
+	"07": {
+		A: PartColors{
+			Env:   []string{"#00deae"},
+			Clo:   []string{"#cc8562", "#f2efea", "#cc8562"},
+			Head:  []string{"#ffce94"},
+			Mouth: []string{"#f73b6c", "#000"},
+			Eyes:  []string{"#e91e63", "#000", "#e91e63", "#000", "#000", "#000"},
+			Top:   []string{"#dd104f", "#dd104f", "#f73b6c", "#dd104f"},
+		},
+		B: PartColors{
+			Env:   []string{"#181284"},
+			Clo:   []string{"#491f49", "#ff9809", "#491f49"},
+			Head:  []string{"#f6ba97"},
+			Mouth: []string{"#ff9809", "#000"},
+			Eyes:  []string{"#c4ffe4", "#000", "#c4ffe4", "#000", "#000", "#000"},
+			Top:   []string{"none", "none", "#d6f740", "#516303"},
+		},
+		C: PartColors{
+			Env:   []string{"#bcf700"},
+			Clo:   []string{"#ff14e4", "#000", "#14fffd"},
+			Head:  []string{"#7b401e"},
+			Mouth: []string{"#666", "#000"},
+			Eyes:  []string{"#00b5b4", "#000", "#00b5b4", "#000", "#000", "#000"},
+			Top:   []string{"#14fffd", "#14fffd", "#14fffd", "#0d3a62"},
+		},
+	},
+	"08": {
+		A: PartColors{
+			Env:   []string{"#0df"},
+			Clo:   []string{"#571e57", "#ff0"},
+			Head:  []string{"#f2c280"},
+			Mouth: []string{"#ff0000"},
+			Eyes:  []string{"#795548", "#000"},
+			Top:   []string{"#de3b00", "none"},
+		},
+		B: PartColors{
+			Env:   []string{"#B400C2"},
+			Clo:   []string{"#0D204A", "#00ffdf"},
+			Head:  []string{"#ca8628"},
+			Mouth: []string{"#1a1a1a"},
+			Eyes:  []string{"#cbbdaf", "#000"},
+			Top:   []string{"#000", "#000"},
+		},
+		C: PartColors{
+			Env:   []string{"#ffe926"},
+			Clo:   []string{"#00d6af", "#000"},
+			Head:  []string{"#8c5100"},
+			Mouth: []string{"#7d0000"},
+			Eyes:  []string{"none", "#000"},
+			Top:   []string{"#f7f7f7", "none"},
+		},
+	},
+	"09": {
+		A: PartColors{
+			Env:   []string{"#4aff0c"},
+			Clo:   []string{"#101010", "#fff", "#fff"},
+			Head:  []string{"#dbbc7f"},
+			Mouth: []string{"#000"},
+			Eyes:  []string{"#000", "none", "none"},
+			Top:   []string{"#531148", "#531148", "#531148", "none"},
+		},
+		B: PartColors{
+			Env:   []string{"#FFC107"},
+			Clo:   []string{"#033c58", "#fff", "#fff"},
+			Head:  []string{"#dbc97f"},
+			Mouth: []string{"#000"},
+			Eyes:  []string{"none", "#fff", "#000"},
+			Top:   []string{"#FFEB3B", "#FFEB3B", "none", "#FFEB3B"},
+		},
+		C: PartColors{
+			Env:   []string{"#FF9800"},
+			Clo:   []string{"#b40000", "#fff", "#fff"},
+			Head:  []string{"#E2AF6B"},
+			Mouth: []string{"#000"},
+			Eyes:  []string{"none", "#fff", "#000"},
+			Top:   []string{"#ec0000", "#ec0000", "none", "none"},
+		},
+	},
+	"10": {
+		A: PartColors{
+			Env:   []string{"#104c8c"},
+			Clo:   []string{"#354B65", "#3D8EBB", "#89D0DA", "#00FFFD"},
+			Head:  []string{"#cc9a5c"},
+			Mouth: []string{"#222", "#fff"},
+			Eyes:  []string{"#000", "#000"},
+			Top:   []string{"#fff", "#fff", "none"},
+		},
+		B: PartColors{
+			Env:   []string{"#0DC15C"},
+			Clo:   []string{"#212121", "#fff", "#212121", "#fff"},
+			Head:  []string{"#dca45f"},
+			Mouth: []string{"#111", "#633b1d"},
+			Eyes:  []string{"#000", "#000"},
+			Top:   []string{"none", "#792B74", "#792B74"},
+		},
+		C: PartColors{
+			Env:   []string{"#ffe500"},
+			Clo:   []string{"#1e5e80", "#fff", "#1e5e80", "#fff"},
+			Head:  []string{"#e8bc86"},
+			Mouth: []string{"#111", "none"},
+			Eyes:  []string{"#000", "#000"},
+			Top:   []string{"none", "none", "#633b1d"},
+		},
+	},
+	"11": {
+		A: PartColors{
+			Env:   []string{"#4a3f73"},
+			Clo:   []string{"#e6e9ee", "#f1543f", "#ff7058", "#fff", "#fff"},
+			Head:  []string{"#b27e5b"},
+			Mouth: []string{"#191919", "#191919"},
+			Eyes:  []string{"#000", "#000", "#57FFFD"},
+			Top:   []string{"#ffc", "#ffc", "#ffc"},
+		},
+		B: PartColors{
+			Env:   []string{"#00a08d"},
+			Clo:   []string{"#FFBA32", "#484848", "#4e4e4e", "#fff", "#fff"},
+			Head:  []string{"#ab5f2c"},
+			Mouth: []string{"#191919", "#191919"},
+			Eyes:  []string{"#000", "#ff23fa;opacity:0.39", "#000"},
+			Top:   []string{"#ff90f4", "#ff90f4", "#ff90f4"},
+		},
+		C: PartColors{
+			Env:   []string{"#22535d"},
+			Clo:   []string{"#000", "#ff2500", "#ff2500", "#fff", "#fff"},
+			Head:  []string{"#a76c44"},
+			Mouth: []string{"#191919", "#191919"},
+			Eyes:  []string{"#000", "none", "#000"},
+			Top:   []string{"none", "#00efff", "none"},
+		},
+	},
+	"12": {
+		A: PartColors{
+			Env:   []string{"#2668DC"},
+			Clo:   []string{"#2385c6", "#b8d0e0", "#b8d0e0"},
+			Head:  []string{"#ad8a60"},
+			Mouth: []string{"#000", "#4d4d4d"},
+			Eyes:  []string{"#7fb5a2", "#d1eddf", "#301e19"},
+			Top:   []string{"#ff6"},
+		},
+		B: PartColors{
+			Env:   []string{"#643869"},
+			Clo:   []string{"#D67D1B", "#b8d0e0", "#b8d0e0"},
+			Head:  []string{"#CC985A", "none0000"},
+			Mouth: []string{"#000", "#ececec"},
+			Eyes:  []string{"#1f2644", "#9b97ce", "#301e19"},
+			Top:   []string{"#c700c7"},
+		},
+		C: PartColors{
+			Env:   []string{"#F599FF"},
+			Clo:   []string{"#2823C6", "#b8d0e0", "#b8d0e0"},
+			Head:  []string{"#C7873A"},
+			Mouth: []string{"#000", "#4d4d4d"},
+			Eyes:  []string{"#581b1b", "#FF8B8B", "#000"},
+			Top:   []string{"#5F1F1F"},
+		},
+	},
+	"13": {
+		A: PartColors{
+			Env:   []string{"#d10084"},
+			Clo:   []string{"#efedee", "#00a1e0", "#00a1e0", "#efedee", "#ffce1c"},
+			Head:  []string{"#b35f49"},
+			Mouth: []string{"#3a484a", "#000"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#000", "none", "#000", "none"},
+		},
+		B: PartColors{
+			Env:   []string{"#E6C117"},
+			Clo:   []string{"#efedee", "#ec0033", "#ec0033", "#efedee", "#f2ff05"},
+			Head:  []string{"#ffc016"},
+			Mouth: []string{"#4a3737", "#000"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#ffe900", "#ffe900", "none", "#ffe900"},
+		},
+		C: PartColors{
+			Env:   []string{"#1d8c00"},
+			Clo:   []string{"#e000cb", "#fff", "#fff", "#e000cb", "#ffce1c"},
+			Head:  []string{"#b96438"},
+			Mouth: []string{"#000", "#000"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#eff4b0"},
+		},
+	},
+	"14": {
+		A: PartColors{
+			Env:   []string{"#fc0065"},
+			Clo:   []string{"#708913", "#fdea14", "#708913", "#fdea14", "#708913"},
+			Head:  []string{"#DEA561"},
+			Mouth: []string{"#444", "#000"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f", "#32393f"},
+		},
+		B: PartColors{
+			Env:   []string{"#81f72e"},
+			Clo:   []string{"#ff0000", "#ffc107", "#ff0000", "#ffc107", "#ff0000"},
+			Head:  []string{"#ef9831"},
+			Mouth: []string{"#a2a2a2", "#000"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#FFFAAD", "#FFFAAD", "#FFFAAD", "#FFFAAD", "#FFFAAD", "#FFFAAD", "#FFFAAD", "#FFFAAD", "#FFFAAD", "#FFFAAD", "#FFFAAD", "#FFFAAD", "#FFFAAD", "none", "none", "none", "none"},
+		},
+		C: PartColors{
+			Env:   []string{"#00D872"},
+			Clo:   []string{"#590D00", "#FD1336", "#590D00", "#FD1336", "#590D00"},
+			Head:  []string{"#c36c00"},
+			Mouth: []string{"#56442b", "#000"},
+			Eyes:  []string{"#000"},
+			Top:   []string{"#004E4C", "#004E4C", "#004E4C", "#004E4C", "#004E4C", "#004E4C", "#004E4C", "#004E4C", "#004E4C", "none", "none", "none", "none", "none", "none", "none", "none"},
+		},
+	},
+	"15": {
+		A: PartColors{
+			Env:   []string{"#ccc"},
+			Clo:   []string{"#000", "#00FFFF"},
+			Head:  []string{"#755227"},
+			Mouth: []string{"#fff", "#000"},
+			Eyes:  []string{"black", "#008;opacity:0.67", "aqua"},
+			Top:   []string{"#004a57"},
+		},
+		B: PartColors{
+			Env:   []string{"#00D0D4"},
+			Clo:   []string{"#000", "#fff"},
+			Head:  []string{"#755227"},
+			Mouth: []string{"#fff", "#000"},
+			Eyes:  []string{"black", "black", "#ff0303"},
+			Top:   []string{"#fffbaf"},
+		},
+		C: PartColors{
+			Env:   []string{"#DC75FF"},
+			Clo:   []string{"#000", "#FFBDEC"},
+			Head:  []string{"#997549"},
+			Mouth: []string{"#fff", "#000"},
+			Eyes:  []string{"black", "black", "aqua"},
+			Top:   []string{"#474747"},
+		},
+	},
+}

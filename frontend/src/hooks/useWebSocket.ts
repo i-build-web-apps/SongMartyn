@@ -16,8 +16,10 @@ export function useWebSocket() {
     const unsubWelcome = wsService.on('welcome', (payload) => {
       store.setConnected(true);
       store.setConnecting(false);
+      store.setBlocked(false);
       store.setSession(payload.session);
       store.updateState(payload.room_state);
+      store.addNotification('success', `Welcome, ${payload.session.display_name}!`);
       console.log('Session restored:', payload.session.display_name);
     });
 
@@ -27,6 +29,16 @@ export function useWebSocket() {
 
     const unsubError = wsService.on('error', (payload) => {
       console.error('Server error:', payload.message);
+      store.addNotification('error', payload.message || 'An error occurred');
+    });
+
+    const unsubKicked = wsService.on('kicked', (payload) => {
+      console.log('You have been kicked/blocked:', payload.reason);
+      store.setConnected(false);
+      // Check if this is a block message
+      if (payload.reason.includes('blocked')) {
+        store.setBlocked(true, payload.reason);
+      }
     });
 
     // Connect
@@ -37,6 +49,7 @@ export function useWebSocket() {
       unsubWelcome();
       unsubState();
       unsubError();
+      unsubKicked();
       wsService.disconnect();
     };
   }, []);

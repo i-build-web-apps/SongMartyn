@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { useRoomStore } from '../stores/roomStore';
+import { wsService } from '../services/websocket';
+import { buildAvatarUrl } from './AvatarCreator';
 
 const API_BASE = import.meta.env.DEV ? 'https://localhost:8443' : '';
 
@@ -73,15 +76,19 @@ export function Header({ onOpenSettings }: { onOpenSettings?: () => void }) {
         className="flex items-center gap-2 text-green-400 hover:text-yellow-neon transition-colors group"
         title="User Settings"
       >
-        {/* Pixel avatar */}
-        {session?.avatar_id ? (
+        {/* User avatar */}
+        {session?.avatar_config ? (
           <img
-            src={`/avatars/${session.avatar_id}.png`}
+            src={buildAvatarUrl(session.avatar_config)}
             alt=""
-            className="w-6 h-6 rounded"
+            className="w-7 h-7 rounded-full"
           />
         ) : (
-          <div className="w-2 h-2 bg-green-400 rounded-full group-hover:bg-yellow-neon" />
+          <div className="w-7 h-7 rounded-full bg-gray-600 flex items-center justify-center">
+            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
+          </div>
         )}
         <span className="text-sm group-hover:underline">
           {session?.display_name || 'Connected'}
@@ -98,15 +105,33 @@ export function Header({ onOpenSettings }: { onOpenSettings?: () => void }) {
     <>
       <header className="flex items-center justify-between px-4 py-3 bg-matte-gray/50 backdrop-blur-sm border-b border-white/5">
         {/* Logo */}
-        <div className="flex items-center gap-2">
+        <Link to="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
           <img src="/logo.jpeg" alt="SongMartyn" className="w-10 h-10 rounded-lg object-cover" />
           <span className="text-xl font-bold text-white">
             Song<span className="text-yellow-neon">Martyn</span>
           </span>
-        </div>
+        </Link>
 
         {/* Right side: Admin link (local only) + QR code button + Connection status */}
         <div className="flex items-center gap-2">
+          {/* AFK Button - shown when connected */}
+          {isConnected && (
+            <button
+              onClick={() => wsService.setAFK(!session?.is_afk)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                session?.is_afk
+                  ? 'bg-orange-500/20 text-orange-400 hover:bg-orange-500/30'
+                  : 'bg-gray-700/50 text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+              title={session?.is_afk ? 'Click to return from AFK' : 'Mark yourself as Away (songs move to end)'}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              {session?.is_afk ? 'AFK' : 'Away'}
+            </button>
+          )}
+
           {/* Admin link - only for local users */}
           {isLocal && (
             <a

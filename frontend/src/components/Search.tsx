@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchStore, getFeatures } from '../stores/searchStore';
-import type { LibrarySong } from '../types';
+import { useRoomStore, selectVocalAssist } from '../stores/roomStore';
+import type { LibrarySong, VocalAssistLevel } from '../types';
+import { VOCAL_LABELS } from '../types';
 
 function formatDuration(seconds: number): string {
   if (!seconds) return '';
@@ -47,9 +49,14 @@ function SongCard({ song, onSelect }: { song: LibrarySong; onSelect: () => void 
 
 function ConfirmSongModal({ song, onConfirm, onCancel }: {
   song: LibrarySong;
-  onConfirm: () => void;
+  onConfirm: (vocalAssist: VocalAssistLevel) => void;
   onCancel: () => void;
 }) {
+  const roomVocalAssist = useRoomStore(selectVocalAssist);
+  const [selectedLevel, setSelectedLevel] = useState<VocalAssistLevel>(roomVocalAssist);
+
+  const levels: VocalAssistLevel[] = ['OFF', 'LOW', 'MED', 'HIGH'];
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60" onClick={onCancel} />
@@ -74,7 +81,31 @@ function ConfirmSongModal({ song, onConfirm, onCancel }: {
           </div>
         </div>
 
-        <p className="text-center text-white mb-6">Add this song to the queue?</p>
+        {/* Vocal Assist Selector */}
+        <div className="mb-6">
+          <label className="block text-gray-400 text-sm mb-3">Vocal Assist Level</label>
+          <div className="grid grid-cols-4 gap-2">
+            {levels.map((level) => (
+              <button
+                key={level}
+                onClick={() => setSelectedLevel(level)}
+                className={`py-2 px-2 rounded-lg text-sm font-medium transition-all ${
+                  selectedLevel === level
+                    ? 'bg-yellow-neon text-indigo-deep'
+                    : 'bg-matte-black text-gray-400 hover:text-white'
+                }`}
+              >
+                {VOCAL_LABELS[level]}
+              </button>
+            ))}
+          </div>
+          <p className="text-gray-500 text-xs mt-2 text-center">
+            {selectedLevel === 'OFF' && 'Pure instrumental - no vocal guidance'}
+            {selectedLevel === 'LOW' && 'Subtle pitch reference in background'}
+            {selectedLevel === 'MED' && 'Light melody guide to follow along'}
+            {selectedLevel === 'HIGH' && 'Full backing vocals for support'}
+          </p>
+        </div>
 
         {/* Buttons */}
         <div className="flex gap-3">
@@ -85,7 +116,7 @@ function ConfirmSongModal({ song, onConfirm, onCancel }: {
             Cancel
           </button>
           <button
-            onClick={onConfirm}
+            onClick={() => onConfirm(selectedLevel)}
             className="flex-1 py-3 bg-yellow-neon text-indigo-deep font-semibold rounded-xl hover:scale-[1.02] transition-transform"
           >
             Add to Queue
@@ -201,9 +232,9 @@ export function Search() {
     setSelectedSong(song);
   };
 
-  const handleConfirmAdd = () => {
+  const handleConfirmAdd = (vocalAssist: VocalAssistLevel) => {
     if (selectedSong) {
-      addToQueue(selectedSong);
+      addToQueue(selectedSong, vocalAssist);
       setSelectedSong(null);
       closeSearch();
     }

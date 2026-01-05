@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { ClientInfo, AdminAuthResponse } from '../types';
+import { wsService } from '../services/websocket';
 
 const ADMIN_TOKEN_KEY = 'songmartyn_admin_token';
 const API_BASE = import.meta.env.DEV ? 'https://localhost:8443' : '';
@@ -21,7 +22,10 @@ interface AdminStore {
   setClients: (clients: ClientInfo[]) => void;
   fetchClients: () => Promise<void>;
   setAdminStatus: (martynKey: string, isAdmin: boolean) => Promise<boolean>;
-  kickClient: (martynKey: string) => Promise<boolean>;
+  setAFKStatus: (martynKey: string, isAFK: boolean) => Promise<boolean>;
+  kickClient: (martynKey: string, reason?: string) => Promise<boolean>;
+  blockClient: (martynKey: string, durationMinutes: number, reason?: string) => Promise<boolean>;
+  unblockClient: (martynKey: string) => Promise<boolean>;
 }
 
 export const useAdminStore = create<AdminStore>((set, get) => ({
@@ -130,16 +134,37 @@ export const useAdminStore = create<AdminStore>((set, get) => ({
     }
   },
 
-  kickClient: async (martynKey: string) => {
+  setAFKStatus: async (martynKey: string, isAFK: boolean) => {
     try {
-      const token = get().token;
-      const res = await fetch(`${API_BASE}/api/admin/clients/${martynKey}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-      return res.ok;
+      wsService.adminSetAFK(martynKey, isAFK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  kickClient: async (martynKey: string, reason?: string) => {
+    try {
+      wsService.adminKick(martynKey, reason);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  blockClient: async (martynKey: string, durationMinutes: number, reason?: string) => {
+    try {
+      wsService.adminBlock(martynKey, durationMinutes, reason);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  unblockClient: async (martynKey: string) => {
+    try {
+      wsService.adminUnblock(martynKey);
+      return true;
     } catch {
       return false;
     }

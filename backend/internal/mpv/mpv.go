@@ -52,23 +52,37 @@ func (c *Controller) Start() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Kill any existing mpv processes to avoid conflicts
+	exec.Command("pkill", "-x", "mpv").Run()
+	time.Sleep(200 * time.Millisecond)
+
 	// Remove stale socket
 	os.Remove(c.socketPath)
 
 	// Start mpv with required options
-	c.cmd = exec.Command(c.executable,
+	args := []string{
 		"--idle=yes",
 		"--force-window=yes",
 		"--keep-open=yes",
-		"--input-ipc-server="+c.socketPath,
-		"--hwdec=auto",           // Hardware acceleration
-		"--vo=gpu",               // GPU video output
-		"--ao=pipewire,pulse,alsa", // Audio output priority
+		"--input-ipc-server=" + c.socketPath,
+		"--hwdec=auto",    // Hardware acceleration
 		"--volume=100",
 		"--fullscreen=no",
-		"--osc=no",               // Disable on-screen controller
-		"--osd-level=0",          // Minimal OSD
-	)
+		"--osc=no",        // Disable on-screen controller
+		"--osd-level=0",   // Minimal OSD
+	}
+
+	// Platform-specific audio output
+	switch runtime.GOOS {
+	case "darwin":
+		args = append(args, "--ao=coreaudio")
+	case "windows":
+		args = append(args, "--ao=wasapi")
+	default: // Linux and others
+		args = append(args, "--ao=pipewire,pulse,alsa")
+	}
+
+	c.cmd = exec.Command(c.executable, args...)
 
 	if err := c.cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start mpv: %w", err)
@@ -114,6 +128,38 @@ func (c *Controller) Stop() error {
 	return nil
 }
 
+// StopPlayback stops the current playback without terminating MPV
+// This stops playback and clears the playlist
+func (c *Controller) StopPlayback() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("mpv not connected")
+	}
+
+	// Use the stop command which stops playback and clears playlist
+	_, err := c.conn.Call("stop")
+	return err
+}
+
+// IsRunning returns true if mpv is running and connected
+func (c *Controller) IsRunning() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn != nil && c.cmd != nil && c.cmd.Process != nil
+}
+
+// Restart restarts the mpv process
+func (c *Controller) Restart() error {
+	// Stop if running
+	if c.IsRunning() {
+		c.Stop()
+		time.Sleep(200 * time.Millisecond) // Give time for cleanup
+	}
+	return c.Start()
+}
+
 // Play starts or resumes playback
 func (c *Controller) Play() error {
 	c.mu.RLock()
@@ -145,6 +191,47 @@ func (c *Controller) LoadFile(path string) error {
 		return fmt.Errorf("mpv not connected")
 	}
 	_, err := c.conn.Call("loadfile", path)
+	return err
+}
+
+// LoadImage loads an image file and displays it indefinitely
+// Used for holding screens between songs
+func (c *Controller) LoadImage(path string) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("mpv not connected")
+	}
+
+	// First set the properties for image display
+	c.conn.Set("image-display-duration", "inf")
+	c.conn.Set("loop-file", "inf")
+
+	// Then load the image
+	_, err := c.conn.Call("loadfile", path, "replace")
+	return err
+}
+
+// LoadCDG loads a CDG file with its paired audio file
+// CDG files contain karaoke graphics that sync with the audio
+func (c *Controller) LoadCDG(cdgPath, audioPath string) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("mpv not connected")
+	}
+
+	// Reset loop settings from image display
+	c.conn.Set("loop-file", "no")
+
+	// Load CDG as video with external audio file
+	// Note: audio-files (plural) is the correct mpv option name
+	_, err := c.conn.Call("loadfile", cdgPath,
+		"replace",
+		fmt.Sprintf("audio-files=%s", audioPath),
+	)
 	return err
 }
 
@@ -262,7 +349,17 @@ func (c *Controller) listenEvents() {
 	for event := range events {
 		switch event.Name {
 		case "end-file":
-			if c.onTrackEnd != nil {
+			// Check the reason for end-file
+			// Reason can be: eof, stop, quit, error, redirect, unknown
+			reason := "unknown"
+			if r, ok := event.ExtraData["reason"].(string); ok {
+				reason = r
+			}
+			fmt.Printf("[MPV EVENT] end-file (reason: %s, data: %+v)\n", reason, event.ExtraData)
+
+			// Only trigger onTrackEnd for natural end of file (eof)
+			// Skip for errors or other reasons
+			if reason == "eof" && c.onTrackEnd != nil {
 				c.onTrackEnd()
 			}
 		case "property-change":

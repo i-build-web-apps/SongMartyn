@@ -6,6 +6,7 @@ import type {
   VocalAssistLevel,
   SearchResult,
   ClientInfo,
+  AvatarConfig,
 } from '../types';
 
 const MARTYN_KEY_STORAGE = 'songmartyn_key';
@@ -28,6 +29,7 @@ class WebSocketService {
   private handlers: Partial<MessageHandler> = {};
   private isConnecting = false;
   private displayName: string = '';
+  private wasKicked = false; // Prevent reconnection after being kicked/blocked
 
   constructor() {
     // Default to current host for WebSocket
@@ -105,6 +107,11 @@ class WebSocketService {
 
   // Schedule reconnection with exponential backoff
   private scheduleReconnect(): void {
+    // Don't reconnect if user was kicked/blocked
+    if (this.wasKicked) {
+      console.log('[WS DEBUG] Not reconnecting - user was kicked/blocked');
+      return;
+    }
     setTimeout(() => {
       console.log(`Reconnecting in ${this.reconnectDelay}ms...`);
       this.connect(this.displayName);
@@ -138,9 +145,9 @@ class WebSocketService {
         this.handlers.client_list?.(message.payload as ClientInfo[]);
         break;
       case 'kicked':
+        this.wasKicked = true; // Prevent auto-reconnection
         this.handlers.kicked?.(message.payload as { reason: string });
-        // Clear stored key and redirect
-        localStorage.removeItem(MARTYN_KEY_STORAGE);
+        // Don't clear MartynKey - keep identity for potential unblock
         break;
     }
   }
@@ -168,12 +175,32 @@ class WebSocketService {
     this.send('search', query);
   }
 
-  queueAdd(songId: string): void {
-    this.send('queue_add', songId);
+  queueAdd(songId: string, vocalAssist?: string): void {
+    this.send('queue_add', { song_id: songId, vocal_assist: vocalAssist || 'OFF' });
   }
 
   queueRemove(songId: string): void {
     this.send('queue_remove', songId);
+  }
+
+  queueMove(fromIndex: number, toIndex: number): void {
+    this.send('queue_move', { from: fromIndex, to: toIndex });
+  }
+
+  queueClear(): void {
+    this.send('queue_clear', null);
+  }
+
+  queueShuffle(): void {
+    this.send('queue_shuffle', null);
+  }
+
+  queueRequeue(songId: string, martynKey: string): void {
+    this.send('queue_requeue', { song_id: songId, martyn_key: martynKey });
+  }
+
+  setAFK(isAFK: boolean): void {
+    this.send('set_afk', isAFK);
   }
 
   play(): void {
@@ -200,8 +227,23 @@ class WebSocketService {
     this.send('volume', volume);
   }
 
-  setDisplayName(name: string, avatarId?: string): void {
-    this.send('set_display_name', { display_name: name, avatar_id: avatarId || '' });
+  setAutoplay(enabled: boolean): void {
+    this.send('autoplay', enabled);
+  }
+
+  setDisplayName(name: string, avatarId?: string, avatarConfig?: AvatarConfig): void {
+    this.send('set_display_name', {
+      display_name: name,
+      avatar_id: avatarId || '',
+      avatar_config: avatarConfig,
+    });
+  }
+
+  setAvatarConfig(config: AvatarConfig): void {
+    this.send('set_display_name', {
+      display_name: '',  // Empty means keep current name
+      avatar_config: config,
+    });
   }
 
   // Admin methods
@@ -211,6 +253,26 @@ class WebSocketService {
 
   adminKick(martynKey: string, reason?: string): void {
     this.send('admin_kick', { martyn_key: martynKey, reason: reason || '' });
+  }
+
+  adminBlock(martynKey: string, durationMinutes: number, reason?: string): void {
+    this.send('admin_block', { martyn_key: martynKey, duration: durationMinutes, reason: reason || '' });
+  }
+
+  adminUnblock(martynKey: string): void {
+    this.send('admin_unblock', { martyn_key: martynKey });
+  }
+
+  adminSetAFK(martynKey: string, isAFK: boolean): void {
+    this.send('admin_set_afk', { martyn_key: martynKey, is_afk: isAFK });
+  }
+
+  adminPlayNext(): void {
+    this.send('admin_play_next', null);
+  }
+
+  adminStop(): void {
+    this.send('admin_stop', null);
   }
 
   // Disconnect

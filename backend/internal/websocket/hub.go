@@ -29,6 +29,8 @@ const (
 	MsgSearch         MessageType = "search"          // Search for songs
 	MsgQueueAdd       MessageType = "queue_add"       // Add song to queue
 	MsgQueueRemove    MessageType = "queue_remove"    // Remove song from queue
+	MsgQueueMove      MessageType = "queue_move"      // Move song in queue
+	MsgQueueClear     MessageType = "queue_clear"     // Clear entire queue
 	MsgPlay           MessageType = "play"            // Play/resume
 	MsgPause          MessageType = "pause"           // Pause
 	MsgSkip           MessageType = "skip"            // Skip current song
@@ -36,10 +38,19 @@ const (
 	MsgVocalAssist    MessageType = "vocal_assist"    // Set vocal assist level
 	MsgVolume         MessageType = "volume"          // Set volume
 	MsgSetDisplayName MessageType = "set_display_name" // Set custom display name
+	MsgAutoplay       MessageType = "autoplay"        // Toggle autoplay
+	MsgQueueShuffle   MessageType = "queue_shuffle"   // Shuffle queue
+	MsgQueueRequeue   MessageType = "queue_requeue"   // Re-add song from history
+	MsgSetAFK         MessageType = "set_afk"         // Set AFK status
 
 	// Admin messages (Client -> Server)
-	MsgAdminSetAdmin MessageType = "admin_set_admin" // Promote/demote user to admin
-	MsgAdminKick     MessageType = "admin_kick"      // Kick a user
+	MsgAdminSetAdmin  MessageType = "admin_set_admin"  // Promote/demote user to admin
+	MsgAdminKick      MessageType = "admin_kick"       // Kick a user
+	MsgAdminBlock     MessageType = "admin_block"      // Block a user
+	MsgAdminUnblock   MessageType = "admin_unblock"    // Unblock a user
+	MsgAdminSetAFK    MessageType = "admin_set_afk"    // Set user's AFK status
+	MsgAdminPlayNext  MessageType = "admin_play_next"  // Start next song now (skip countdown)
+	MsgAdminStop      MessageType = "admin_stop"       // Stop playback and enter pending mode
 
 	// Server -> Client
 	MsgWelcome      MessageType = "welcome"       // Session restored/created
@@ -80,12 +91,16 @@ type Client struct {
 
 // ClientInfo contains client connection info for admin display
 type ClientInfo struct {
-	MartynKey   string `json:"martyn_key"`
-	DisplayName string `json:"display_name"`
-	DeviceName  string `json:"device_name"`
-	IPAddress   string `json:"ip_address"`
-	IsAdmin     bool   `json:"is_admin"`
-	IsOnline    bool   `json:"is_online"`
+	MartynKey    string              `json:"martyn_key"`
+	DisplayName  string              `json:"display_name"`
+	DeviceName   string              `json:"device_name"`
+	IPAddress    string              `json:"ip_address"`
+	IsAdmin      bool                `json:"is_admin"`
+	IsOnline     bool                `json:"is_online"`
+	IsAFK        bool                `json:"is_afk"`
+	IsBlocked    bool                `json:"is_blocked"`
+	BlockReason  string              `json:"block_reason,omitempty"`
+	AvatarConfig *models.AvatarConfig `json:"avatar_config,omitempty"`
 }
 
 // AdminSetAdminPayload is the payload for setting admin status
@@ -100,10 +115,41 @@ type AdminKickPayload struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+// AdminBlockPayload is the payload for blocking a user
+type AdminBlockPayload struct {
+	MartynKey string `json:"martyn_key"`
+	Duration  int    `json:"duration"` // Duration in minutes (0 = permanent)
+	Reason    string `json:"reason,omitempty"`
+}
+
+// AdminUnblockPayload is the payload for unblocking a user
+type AdminUnblockPayload struct {
+	MartynKey string `json:"martyn_key"`
+}
+
+// AdminSetAFKPayload is the payload for setting a user's AFK status
+type AdminSetAFKPayload struct {
+	MartynKey string `json:"martyn_key"`
+	IsAFK     bool   `json:"is_afk"`
+}
+
 // SetDisplayNamePayload is the payload for setting display name and avatar
 type SetDisplayNamePayload struct {
-	DisplayName string `json:"display_name"`
-	AvatarID    string `json:"avatar_id,omitempty"`
+	DisplayName  string              `json:"display_name"`
+	AvatarID     string              `json:"avatar_id,omitempty"`
+	AvatarConfig *models.AvatarConfig `json:"avatar_config,omitempty"`
+}
+
+// QueueAddPayload is the payload for adding a song to the queue
+type QueueAddPayload struct {
+	SongID      string                  `json:"song_id"`
+	VocalAssist models.VocalAssistLevel `json:"vocal_assist"`
+}
+
+// QueueMovePayload is the payload for moving a song in the queue
+type QueueMovePayload struct {
+	From int `json:"from"`
+	To   int `json:"to"`
 }
 
 // Hub manages all WebSocket connections (The Nest Hub)
@@ -115,19 +161,30 @@ type Hub struct {
 	mu         sync.RWMutex
 
 	// Callbacks for handling messages
-	onHandshake      func(client *Client, payload HandshakePayload) (*models.Session, *models.RoomState)
-	onSearch         func(client *Client, query string)
-	onQueueAdd       func(client *Client, songID string)
-	onQueueRemove    func(client *Client, songID string)
-	onPlay           func(client *Client)
-	onPause          func(client *Client)
-	onSkip           func(client *Client)
-	onSeek           func(client *Client, position float64)
-	onVocalAssist    func(client *Client, level models.VocalAssistLevel)
-	onVolume         func(client *Client, volume float64)
-	onSetDisplayName func(client *Client, name string, avatarID string)
-	onAdminSetAdmin  func(client *Client, martynKey string, isAdmin bool) error
-	onAdminKick      func(client *Client, martynKey string, reason string) error
+	onHandshake        func(client *Client, payload HandshakePayload) (*models.Session, *models.RoomState)
+	onSearch           func(client *Client, query string)
+	onQueueAdd         func(client *Client, songID string, vocalAssist models.VocalAssistLevel)
+	onQueueRemove      func(client *Client, songID string)
+	onQueueMove        func(client *Client, from int, to int)
+	onQueueClear       func(client *Client)
+	onPlay             func(client *Client)
+	onPause            func(client *Client)
+	onSkip             func(client *Client)
+	onSeek             func(client *Client, position float64)
+	onVocalAssist      func(client *Client, level models.VocalAssistLevel)
+	onVolume           func(client *Client, volume float64)
+	onSetDisplayName   func(client *Client, name string, avatarID string, avatarConfig *models.AvatarConfig)
+	onAutoplay         func(client *Client, enabled bool)
+	onQueueShuffle     func(client *Client)
+	onQueueRequeue     func(client *Client, songID string, martynKey string)
+	onSetAFK           func(client *Client, isAFK bool)
+	onAdminSetAdmin    func(client *Client, martynKey string, isAdmin bool) error
+	onAdminKick        func(client *Client, martynKey string, reason string) error
+	onAdminBlock       func(client *Client, martynKey string, durationMinutes int, reason string) error
+	onAdminUnblock     func(client *Client, martynKey string) error
+	onAdminSetAFK      func(client *Client, martynKey string, isAFK bool) error
+	onAdminPlayNext    func(client *Client) error
+	onAdminStop        func(client *Client) error
 	onClientDisconnect func(client *Client)
 }
 
@@ -300,6 +357,8 @@ func (h *Hub) SetHandlers(handlers HubHandlers) {
 	h.onSearch = handlers.OnSearch
 	h.onQueueAdd = handlers.OnQueueAdd
 	h.onQueueRemove = handlers.OnQueueRemove
+	h.onQueueMove = handlers.OnQueueMove
+	h.onQueueClear = handlers.OnQueueClear
 	h.onPlay = handlers.OnPlay
 	h.onPause = handlers.OnPause
 	h.onSkip = handlers.OnSkip
@@ -307,8 +366,17 @@ func (h *Hub) SetHandlers(handlers HubHandlers) {
 	h.onVocalAssist = handlers.OnVocalAssist
 	h.onVolume = handlers.OnVolume
 	h.onSetDisplayName = handlers.OnSetDisplayName
+	h.onAutoplay = handlers.OnAutoplay
+	h.onQueueShuffle = handlers.OnQueueShuffle
+	h.onQueueRequeue = handlers.OnQueueRequeue
+	h.onSetAFK = handlers.OnSetAFK
 	h.onAdminSetAdmin = handlers.OnAdminSetAdmin
 	h.onAdminKick = handlers.OnAdminKick
+	h.onAdminBlock = handlers.OnAdminBlock
+	h.onAdminUnblock = handlers.OnAdminUnblock
+	h.onAdminSetAFK = handlers.OnAdminSetAFK
+	h.onAdminPlayNext = handlers.OnAdminPlayNext
+	h.onAdminStop = handlers.OnAdminStop
 	h.onClientDisconnect = handlers.OnClientDisconnect
 }
 
@@ -316,17 +384,28 @@ func (h *Hub) SetHandlers(handlers HubHandlers) {
 type HubHandlers struct {
 	OnHandshake        func(client *Client, payload HandshakePayload) (*models.Session, *models.RoomState)
 	OnSearch           func(client *Client, query string)
-	OnQueueAdd         func(client *Client, songID string)
+	OnQueueAdd         func(client *Client, songID string, vocalAssist models.VocalAssistLevel)
 	OnQueueRemove      func(client *Client, songID string)
+	OnQueueMove        func(client *Client, from int, to int)
+	OnQueueClear       func(client *Client)
 	OnPlay             func(client *Client)
 	OnPause            func(client *Client)
 	OnSkip             func(client *Client)
 	OnSeek             func(client *Client, position float64)
 	OnVocalAssist      func(client *Client, level models.VocalAssistLevel)
 	OnVolume           func(client *Client, volume float64)
-	OnSetDisplayName   func(client *Client, name string, avatarID string)
+	OnSetDisplayName   func(client *Client, name string, avatarID string, avatarConfig *models.AvatarConfig)
+	OnAutoplay         func(client *Client, enabled bool)
+	OnQueueShuffle     func(client *Client)
+	OnQueueRequeue     func(client *Client, songID string, martynKey string)
+	OnSetAFK           func(client *Client, isAFK bool)
 	OnAdminSetAdmin    func(client *Client, martynKey string, isAdmin bool) error
 	OnAdminKick        func(client *Client, martynKey string, reason string) error
+	OnAdminBlock       func(client *Client, martynKey string, durationMinutes int, reason string) error
+	OnAdminUnblock     func(client *Client, martynKey string) error
+	OnAdminSetAFK      func(client *Client, martynKey string, isAFK bool) error
+	OnAdminPlayNext    func(client *Client) error
+	OnAdminStop        func(client *Client) error
 	OnClientDisconnect func(client *Client)
 }
 
@@ -403,6 +482,10 @@ func (c *Client) handleMessage(msg Message) {
 					Session:   *session,
 					RoomState: *roomState,
 				})
+			} else {
+				// Session rejected (e.g., user is blocked) - close connection
+				c.conn.Close()
+				return
 			}
 		}
 
@@ -416,12 +499,12 @@ func (c *Client) handleMessage(msg Message) {
 		}
 
 	case MsgQueueAdd:
-		var songID string
-		if err := json.Unmarshal(msg.Payload, &songID); err != nil {
+		var payload QueueAddPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 			return
 		}
 		if c.hub.onQueueAdd != nil {
-			c.hub.onQueueAdd(c, songID)
+			c.hub.onQueueAdd(c, payload.SongID, payload.VocalAssist)
 		}
 
 	case MsgQueueRemove:
@@ -431,6 +514,20 @@ func (c *Client) handleMessage(msg Message) {
 		}
 		if c.hub.onQueueRemove != nil {
 			c.hub.onQueueRemove(c, songID)
+		}
+
+	case MsgQueueMove:
+		var payload QueueMovePayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return
+		}
+		if c.hub.onQueueMove != nil {
+			c.hub.onQueueMove(c, payload.From, payload.To)
+		}
+
+	case MsgQueueClear:
+		if c.hub.onQueueClear != nil {
+			c.hub.onQueueClear(c)
 		}
 
 	case MsgPlay:
@@ -481,7 +578,61 @@ func (c *Client) handleMessage(msg Message) {
 			return
 		}
 		if c.hub.onSetDisplayName != nil {
-			c.hub.onSetDisplayName(c, payload.DisplayName, payload.AvatarID)
+			c.hub.onSetDisplayName(c, payload.DisplayName, payload.AvatarID, payload.AvatarConfig)
+		}
+
+	case MsgAutoplay:
+		// Admin only - toggle autoplay
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		var enabled bool
+		if err := json.Unmarshal(msg.Payload, &enabled); err != nil {
+			return
+		}
+		if c.hub.onAutoplay != nil {
+			c.hub.onAutoplay(c, enabled)
+		}
+
+	case MsgQueueShuffle:
+		// Admin only - shuffle queue
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		if c.hub.onQueueShuffle != nil {
+			c.hub.onQueueShuffle(c)
+		}
+
+	case MsgQueueRequeue:
+		// Admin only - re-add song from history with new user
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		var payload struct {
+			SongID    string `json:"song_id"`
+			MartynKey string `json:"martyn_key"`
+		}
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return
+		}
+		if c.hub.onQueueRequeue != nil {
+			c.hub.onQueueRequeue(c, payload.SongID, payload.MartynKey)
+		}
+
+	case MsgSetAFK:
+		// User sets their AFK status
+		if c.session == nil {
+			return
+		}
+		var isAFK bool
+		if err := json.Unmarshal(msg.Payload, &isAFK); err != nil {
+			return
+		}
+		if c.hub.onSetAFK != nil {
+			c.hub.onSetAFK(c, isAFK)
 		}
 
 	case MsgAdminSetAdmin:
@@ -515,6 +666,78 @@ func (c *Client) handleMessage(msg Message) {
 				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
 			}
 		}
+
+	case MsgAdminBlock:
+		// Check if client is admin
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		var payload AdminBlockPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return
+		}
+		if c.hub.onAdminBlock != nil {
+			if err := c.hub.onAdminBlock(c, payload.MartynKey, payload.Duration, payload.Reason); err != nil {
+				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+			}
+		}
+
+	case MsgAdminUnblock:
+		// Check if client is admin
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		var payload AdminUnblockPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return
+		}
+		if c.hub.onAdminUnblock != nil {
+			if err := c.hub.onAdminUnblock(c, payload.MartynKey); err != nil {
+				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+			}
+		}
+
+	case MsgAdminSetAFK:
+		// Check if client is admin
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		var payload AdminSetAFKPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return
+		}
+		if c.hub.onAdminSetAFK != nil {
+			if err := c.hub.onAdminSetAFK(c, payload.MartynKey, payload.IsAFK); err != nil {
+				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+			}
+		}
+
+	case MsgAdminPlayNext:
+		// Check if client is admin
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		if c.hub.onAdminPlayNext != nil {
+			if err := c.hub.onAdminPlayNext(c); err != nil {
+				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+			}
+		}
+
+	case MsgAdminStop:
+		// Check if client is admin
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		if c.hub.onAdminStop != nil {
+			if err := c.hub.onAdminStop(c); err != nil {
+				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+			}
+		}
 	}
 }
 
@@ -533,21 +756,26 @@ func (c *Client) GetUserAgent() string {
 	return c.userAgent
 }
 
-// GetConnectedClients returns info about all connected clients
+// GetConnectedClients returns info about all connected clients (deduplicated by MartynKey)
 func (h *Hub) GetConnectedClients() []ClientInfo {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
+	// Deduplicate by MartynKey - same user may have multiple connections
+	seen := make(map[string]bool)
 	clients := make([]ClientInfo, 0, len(h.clients))
 	for client := range h.clients {
-		if client.session != nil {
+		if client.session != nil && !seen[client.session.MartynKey] {
+			seen[client.session.MartynKey] = true
 			clients = append(clients, ClientInfo{
-				MartynKey:   client.session.MartynKey,
-				DisplayName: client.session.DisplayName,
-				DeviceName:  client.session.DeviceName,
-				IPAddress:   client.ipAddress,
-				IsAdmin:     client.session.IsAdmin,
-				IsOnline:    true,
+				MartynKey:    client.session.MartynKey,
+				DisplayName:  client.session.DisplayName,
+				DeviceName:   client.session.DeviceName,
+				IPAddress:    client.ipAddress,
+				IsAdmin:      client.session.IsAdmin,
+				IsOnline:     true,
+				IsAFK:        client.session.IsAFK,
+				AvatarConfig: client.session.AvatarConfig,
 			})
 		}
 	}
@@ -578,6 +806,21 @@ func (h *Hub) KickClient(client *Client, reason string) {
 
 	// Close the connection
 	client.conn.Close()
+}
+
+// DisconnectAll disconnects all clients with a reason
+func (h *Hub) DisconnectAll(reason string) {
+	h.mu.RLock()
+	clients := make([]*Client, 0, len(h.clients))
+	for client := range h.clients {
+		clients = append(clients, client)
+	}
+	h.mu.RUnlock()
+
+	for _, client := range clients {
+		h.SendTo(client, MsgKicked, map[string]string{"reason": reason})
+		client.conn.Close()
+	}
 }
 
 // BroadcastToAdmins sends a message only to admin clients
