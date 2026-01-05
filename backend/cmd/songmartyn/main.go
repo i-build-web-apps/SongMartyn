@@ -666,6 +666,8 @@ func (app *App) setupHandlers() {
 			}
 			// Skip current song (moves it to history)
 			app.queue.Skip()
+			// Brief delay to ensure MPV is ready for new content
+			time.Sleep(100 * time.Millisecond)
 			// Show holding screen with next song info
 			app.showHoldingScreen()
 			app.broadcastState()
@@ -1187,7 +1189,7 @@ func (app *App) Run() {
 		mpvReady = true
 	}
 
-	// Defer playback to after HTTP server starts (avatar API needs to be available)
+	// Show holding screen after HTTP server starts (avatar API needs to be available)
 	go func() {
 		// Wait for HTTP server to be ready
 		time.Sleep(500 * time.Millisecond)
@@ -1196,15 +1198,10 @@ func (app *App) Run() {
 			return
 		}
 
-		// Resume playback if queue has songs and autoplay is enabled
-		if app.queue.Current() != nil && app.queue.GetAutoplay() {
-			log.Println("Queue has songs - resuming playback")
-			app.playCurrentSong()
-		} else {
-			// No songs in queue - show holding screen
-			log.Println("Queue empty at startup - showing holding screen")
-			app.showHoldingScreen()
-		}
+		// Always start with holding screen - require manual Play button
+		// This prevents unexpected playback when restarting the server
+		log.Println("Startup - showing holding screen (manual play required)")
+		app.showHoldingScreen()
 	}()
 
 	// Setup routes
