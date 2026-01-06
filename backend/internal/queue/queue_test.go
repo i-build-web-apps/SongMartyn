@@ -708,8 +708,10 @@ func TestPersistence(t *testing.T) {
 		t.Errorf("Position should be persisted as 1, got %d", state.Position)
 	}
 
-	if !state.Autoplay {
-		t.Error("Autoplay should be persisted as true")
+	// Autoplay intentionally resets to OFF on startup for safety
+	// (prevents unexpected playback when server restarts)
+	if state.Autoplay {
+		t.Error("Autoplay should reset to false on startup (safety feature)")
 	}
 }
 
@@ -740,5 +742,426 @@ func TestUpdateSongPaths(t *testing.T) {
 	}
 	if current.InstrPath != "/path/to/instr.wav" {
 		t.Errorf("InstrPath should be updated, got '%s'", current.InstrPath)
+	}
+}
+
+// =============================================================================
+// History-Related Tests
+// =============================================================================
+
+// TestHistoryTracking verifies that position tracks history correctly
+func TestHistoryTracking(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	// Add 3 songs
+	manager.Add(createTestSong("song1", "Song One", "Artist", "user1"))
+	manager.Add(createTestSong("song2", "Song Two", "Artist", "user1"))
+	manager.Add(createTestSong("song3", "Song Three", "Artist", "user1"))
+
+	state := manager.GetState()
+
+	// Initially: position=0, history count=0, upcoming=3
+	if state.Position != 0 {
+		t.Errorf("Initial position should be 0, got %d", state.Position)
+	}
+	historyCount := state.Position
+	upcomingCount := len(state.Songs) - state.Position
+	if historyCount != 0 {
+		t.Errorf("History count should be 0, got %d", historyCount)
+	}
+	if upcomingCount != 3 {
+		t.Errorf("Upcoming count should be 3, got %d", upcomingCount)
+	}
+
+	// Skip to second song
+	manager.Skip()
+	state = manager.GetState()
+
+	// Now: position=1, history count=1, upcoming=2
+	if state.Position != 1 {
+		t.Errorf("Position should be 1, got %d", state.Position)
+	}
+	historyCount = state.Position
+	upcomingCount = len(state.Songs) - state.Position
+	if historyCount != 1 {
+		t.Errorf("History count should be 1, got %d", historyCount)
+	}
+	if upcomingCount != 2 {
+		t.Errorf("Upcoming count should be 2, got %d", upcomingCount)
+	}
+
+	// Skip to third song
+	manager.Skip()
+	state = manager.GetState()
+
+	// Now: position=2, history count=2, upcoming=1
+	if state.Position != 2 {
+		t.Errorf("Position should be 2, got %d", state.Position)
+	}
+	historyCount = state.Position
+	upcomingCount = len(state.Songs) - state.Position
+	if historyCount != 2 {
+		t.Errorf("History count should be 2, got %d", historyCount)
+	}
+	if upcomingCount != 1 {
+		t.Errorf("Upcoming count should be 1, got %d", upcomingCount)
+	}
+}
+
+// TestQueueExhaustion verifies behavior when queue is exhausted
+func TestQueueExhaustion(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	manager.Add(createTestSong("song1", "Song One", "Artist", "user1"))
+
+	// Queue not empty initially
+	if manager.IsEmpty() {
+		t.Error("Queue should not be empty")
+	}
+
+	// Skip past the only song
+	manager.Skip()
+
+	// Queue should now be considered empty (exhausted)
+	if !manager.IsEmpty() {
+		t.Error("Queue should be empty after skipping last song")
+	}
+
+	state := manager.GetState()
+	if state.Position != 1 {
+		t.Errorf("Position should be 1, got %d", state.Position)
+	}
+
+	// Current should be nil when exhausted
+	if manager.Current() != nil {
+		t.Error("Current should be nil when queue is exhausted")
+	}
+}
+
+// TestAddSongToExhaustedQueue verifies adding to exhausted queue
+func TestAddSongToExhaustedQueue(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	// Add and exhaust
+	manager.Add(createTestSong("song1", "Song One", "Artist", "user1"))
+	manager.Skip()
+
+	if !manager.IsEmpty() {
+		t.Error("Queue should be exhausted")
+	}
+
+	// Add new song to exhausted queue
+	manager.Add(createTestSong("song2", "Song Two", "Artist", "user1"))
+
+	// Queue should no longer be empty
+	if manager.IsEmpty() {
+		t.Error("Queue should not be empty after adding song")
+	}
+
+	// Current should be the new song
+	current := manager.Current()
+	if current == nil {
+		t.Fatal("Current should not be nil")
+	}
+	if current.Title != "Song Two" {
+		t.Errorf("Current should be 'Song Two', got '%s'", current.Title)
+	}
+}
+
+// TestSkipReturnsNilOnLastSong verifies Skip returns nil on last song
+func TestSkipReturnsNilOnLastSong(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	manager.Add(createTestSong("song1", "Only Song", "Artist", "user1"))
+
+	// Skip the only song
+	next := manager.Skip()
+
+	// Should return nil (no more songs)
+	if next != nil {
+		t.Errorf("Skip on last song should return nil, got %+v", next)
+	}
+}
+
+// TestNextVsSkipBehavior documents the difference between Next and Skip
+func TestNextVsSkipBehavior(t *testing.T) {
+	// This test documents the difference between Next() and Skip():
+	//
+	// Next(): Advances to next song WITHOUT removing current from queue
+	//         Used for normal song progression (song plays, then moves to next)
+	//         Returns next song or nil if no more
+	//
+	// Skip(): Similar to Next() but used when manually skipping
+	//         Also returns nil if skipping past the last song
+	//         The "skipped" song remains in history
+
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	manager.Add(createTestSong("song1", "Song One", "Artist", "user1"))
+	manager.Add(createTestSong("song2", "Song Two", "Artist", "user1"))
+
+	// Use Next
+	next := manager.Next()
+	if next == nil || next.Title != "Song Two" {
+		t.Error("Next should return Song Two")
+	}
+
+	state := manager.GetState()
+	if len(state.Songs) != 2 {
+		t.Error("Songs should still be in queue after Next")
+	}
+}
+
+// TestFairRotation verifies fair rotation behavior
+func TestFairRotation(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	// Enable fair rotation
+	manager.SetFairRotation(true)
+	if !manager.GetFairRotation() {
+		t.Error("Fair rotation should be enabled")
+	}
+
+	// Disable fair rotation
+	manager.SetFairRotation(false)
+	if manager.GetFairRotation() {
+		t.Error("Fair rotation should be disabled")
+	}
+}
+
+// =============================================================================
+// Edge Cases
+// =============================================================================
+
+// TestMoveInvalidIndices verifies Move handles invalid indices gracefully
+func TestMoveInvalidIndices(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	manager.Add(createTestSong("song1", "Song One", "Artist", "user1"))
+
+	// Move with invalid indices should silently succeed (no-op)
+	err = manager.Move(5, 0)
+	if err != nil {
+		t.Errorf("Move with invalid indices should not return error: %v", err)
+	}
+
+	err = manager.Move(0, 5)
+	if err != nil {
+		t.Errorf("Move with invalid indices should not return error: %v", err)
+	}
+
+	// Queue should be unchanged
+	state := manager.GetState()
+	if len(state.Songs) != 1 || state.Songs[0].Title != "Song One" {
+		t.Error("Queue should be unchanged after invalid move")
+	}
+}
+
+// TestRemoveNonExistentSong verifies Remove handles non-existent songs gracefully
+func TestRemoveNonExistentSong(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	manager.Add(createTestSong("song1", "Song One", "Artist", "user1"))
+
+	// Remove non-existent song should silently succeed (no-op)
+	currentRemoved, err := manager.Remove("nonexistent")
+	if err != nil {
+		t.Errorf("Remove non-existent song should not return error: %v", err)
+	}
+	if currentRemoved {
+		t.Error("currentRemoved should be false for non-existent song")
+	}
+
+	// Queue should be unchanged
+	state := manager.GetState()
+	if len(state.Songs) != 1 {
+		t.Error("Queue should be unchanged after removing non-existent song")
+	}
+}
+
+// TestRequeueNonExistentSong verifies Requeue handles non-existent songs gracefully
+func TestRequeueNonExistentSong(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	// Requeue non-existent song should silently succeed (no-op)
+	err = manager.Requeue("nonexistent", "user1")
+	if err != nil {
+		t.Errorf("Requeue non-existent song should not return error: %v", err)
+	}
+
+	// Queue should still be empty
+	state := manager.GetState()
+	if len(state.Songs) != 0 {
+		t.Error("Queue should be empty after requeuing non-existent song")
+	}
+}
+
+// TestClearEmptyQueue verifies Clear on empty queue works
+func TestClearEmptyQueue(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	// Clear empty queue should not error
+	err = manager.Clear()
+	if err != nil {
+		t.Errorf("Clear empty queue should not error: %v", err)
+	}
+}
+
+// TestShuffleEmptyQueue verifies Shuffle on empty queue doesn't panic
+func TestShuffleEmptyQueue(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	// Shuffle empty queue should not panic
+	manager.Shuffle()
+
+	// No panic = success
+}
+
+// TestShuffleSingleSong verifies Shuffle with single song doesn't change anything
+func TestShuffleSingleSong(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	manager, err := NewManager(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	manager.Add(createTestSong("song1", "Only Song", "Artist", "user1"))
+
+	manager.Shuffle()
+
+	state := manager.GetState()
+	if len(state.Songs) != 1 {
+		t.Error("Should still have 1 song after shuffle")
+	}
+	if state.Songs[0].Title != "Only Song" {
+		t.Error("Single song should remain unchanged after shuffle")
 	}
 }
