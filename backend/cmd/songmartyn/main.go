@@ -14,6 +14,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,7 +50,14 @@ type Config struct {
 	KeyFile       string
 	YouTubeAPIKey string
 	VideoPlayer   string
-	LaunchBrowser bool   // Auto-launch admin page on startup
+	LaunchBrowser bool // Auto-launch admin page on startup
+
+	// Feature toggles
+	PitchControlEnabled    bool
+	TempoControlEnabled    bool
+	FairRotationEnabled    bool
+	ScrollingTickerEnabled bool
+	SingerNameOverlay      bool
 }
 
 // App holds the application state
@@ -65,6 +74,9 @@ type App struct {
 	// BGM (Background Music) state
 	bgmSettings models.BGMSettings
 	bgmActive   bool
+
+	// Idle state (showing holding screen, not playing a song)
+	idle bool
 
 	// Inter-song countdown state
 	countdown       models.CountdownState
@@ -88,6 +100,82 @@ func getEnvBool(key string, defaultValue bool) bool {
 		return defaultValue
 	}
 	return value == "true" || value == "1" || value == "yes"
+}
+
+// getEnvFloat returns environment variable as float64
+func getEnvFloat(key string, defaultValue float64) float64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	if f, err := strconv.ParseFloat(value, 64); err == nil {
+		return f
+	}
+	return defaultValue
+}
+
+// saveEnvFile updates specific keys in the .env file while preserving other settings
+func saveEnvFile(updates map[string]string) error {
+	envPath := ".env"
+
+	// Read existing .env file
+	existing := make(map[string]string)
+	var lines []string
+
+	data, err := os.ReadFile(envPath)
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			lines = append(lines, line)
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if idx := strings.Index(line, "="); idx > 0 {
+				key := strings.TrimSpace(line[:idx])
+				existing[key] = line[idx+1:]
+			}
+		}
+	}
+
+	// Apply updates
+	for key, value := range updates {
+		existing[key] = value
+	}
+
+	// Rebuild the file, updating existing keys in place
+	updatedKeys := make(map[string]bool)
+	var result []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			result = append(result, line)
+			continue
+		}
+		if idx := strings.Index(trimmed, "="); idx > 0 {
+			key := strings.TrimSpace(trimmed[:idx])
+			if newVal, ok := updates[key]; ok {
+				result = append(result, fmt.Sprintf("%s=%s", key, newVal))
+				updatedKeys[key] = true
+				continue
+			}
+		}
+		result = append(result, line)
+	}
+
+	// Add any new keys that weren't in the original file
+	for key, value := range updates {
+		if !updatedKeys[key] {
+			result = append(result, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
+	// Write back to file
+	output := strings.Join(result, "\n")
+	if !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+	return os.WriteFile(envPath, []byte(output), 0644)
 }
 
 // openBrowser opens the default browser to the specified URL
@@ -143,6 +231,13 @@ func main() {
 		YouTubeAPIKey: getEnv("YOUTUBE_API_KEY", ""),
 		VideoPlayer:   getEnv("VIDEO_PLAYER", "mpv"),
 		LaunchBrowser: getEnvBool("LAUNCH_BROWSER", false),
+
+		// Feature toggles (default: all enabled)
+		PitchControlEnabled:    getEnvBool("PITCH_CONTROL_ENABLED", true),
+		TempoControlEnabled:    getEnvBool("TEMPO_CONTROL_ENABLED", true),
+		FairRotationEnabled:    getEnvBool("FAIR_ROTATION_ENABLED", false),
+		ScrollingTickerEnabled: getEnvBool("SCROLLING_TICKER_ENABLED", true),
+		SingerNameOverlay:      getEnvBool("SINGER_NAME_OVERLAY", true),
 	}
 
 	// Flags override env values if provided
@@ -233,6 +328,24 @@ func NewApp(config Config) (*App, error) {
 	// Initialize admin manager
 	adminMgr := admin.NewManager(config.AdminPIN)
 
+	// Set up admin auth callback to mark sessions as admin
+	adminMgr.SetOnAdminAuth(func(martynKey string) {
+		// Update in database
+		if err := sessions.SetAdmin(martynKey, true); err != nil {
+			log.Printf("Failed to set admin for %s: %v", martynKey[:8], err)
+			return
+		}
+		log.Printf("Marked session %s as admin in database", martynKey[:8])
+
+		// Also update live WebSocket session if connected
+		if client := hub.FindClientByMartynKey(martynKey); client != nil {
+			if sess := client.GetSession(); sess != nil {
+				sess.IsAdmin = true
+				log.Printf("Updated live session %s as admin", martynKey[:8])
+			}
+		}
+	})
+
 	// Initialize library manager
 	libraryDB := filepath.Join(config.DataDir, "library.db")
 	libraryMgr, err := library.NewManager(libraryDB)
@@ -259,6 +372,17 @@ func NewApp(config Config) (*App, error) {
 		library:       libraryMgr,
 		holdingScreen: holdingScreenGen,
 	}
+
+	// Load BGM settings from .env
+	app.bgmSettings = models.BGMSettings{
+		Enabled:    getEnvBool("BGM_ENABLED", false),
+		SourceType: models.BGMSourceType(getEnv("BGM_SOURCE", "youtube")),
+		URL:        getEnv("BGM_URL", ""),
+		Volume:     getEnvFloat("BGM_VOLUME", 50),
+	}
+
+	// Apply feature settings
+	queueMgr.SetFairRotation(config.FairRotationEnabled)
 
 	// Wire up handlers
 	app.setupHandlers()
@@ -473,6 +597,46 @@ func (app *App) setupHandlers() {
 			}
 		},
 
+		OnKeyChange: func(client *websocket.Client, semitones int) {
+			// Check if pitch control is enabled
+			if !app.config.PitchControlEnabled {
+				log.Printf("Pitch control disabled - ignoring key change request")
+				return
+			}
+			// Clamp to valid range
+			if semitones < -12 {
+				semitones = -12
+			}
+			if semitones > 12 {
+				semitones = 12
+			}
+			if err := app.mpv.SetPitch(semitones); err != nil {
+				log.Printf("Failed to set key change to %d: %v", semitones, err)
+			} else {
+				log.Printf("Key changed to %+d semitones by %s", semitones, client.GetSession().DisplayName)
+			}
+		},
+
+		OnTempoChange: func(client *websocket.Client, speed float64) {
+			// Check if tempo control is enabled
+			if !app.config.TempoControlEnabled {
+				log.Printf("Tempo control disabled - ignoring tempo change request")
+				return
+			}
+			// Clamp to valid range (0.5 to 2.0)
+			if speed < 0.5 {
+				speed = 0.5
+			}
+			if speed > 2.0 {
+				speed = 2.0
+			}
+			if err := app.mpv.SetTempo(speed); err != nil {
+				log.Printf("Failed to set tempo to %.2f: %v", speed, err)
+			} else {
+				log.Printf("Tempo changed to %.2fx by %s", speed, client.GetSession().DisplayName)
+			}
+		},
+
 		OnSetDisplayName: func(client *websocket.Client, name string, avatarID string, avatarConfig *models.AvatarConfig) {
 			if sess := client.GetSession(); sess != nil {
 				// Only update name if provided (non-empty)
@@ -534,6 +698,38 @@ func (app *App) setupHandlers() {
 
 			app.broadcastState()
 			app.broadcastClientList()
+		},
+
+		OnAddFavorite: func(client *websocket.Client, songID string) {
+			sess := client.GetSession()
+			if sess == nil {
+				return
+			}
+			if err := app.sessions.AddFavorite(sess.MartynKey, songID); err != nil {
+				log.Printf("Failed to add favorite: %v", err)
+				return
+			}
+			// Update in-memory session
+			sess.Favorites = app.sessions.GetFavorites(sess.MartynKey)
+			log.Printf("%s added song %s to favorites", sess.DisplayName, songID)
+			// Broadcast updated state so client gets updated favorites list
+			app.broadcastState()
+		},
+
+		OnRemoveFavorite: func(client *websocket.Client, songID string) {
+			sess := client.GetSession()
+			if sess == nil {
+				return
+			}
+			if err := app.sessions.RemoveFavorite(sess.MartynKey, songID); err != nil {
+				log.Printf("Failed to remove favorite: %v", err)
+				return
+			}
+			// Update in-memory session
+			sess.Favorites = app.sessions.GetFavorites(sess.MartynKey)
+			log.Printf("%s removed song %s from favorites", sess.DisplayName, songID)
+			// Broadcast updated state so client gets updated favorites list
+			app.broadcastState()
 		},
 
 		OnAdminSetAdmin: func(client *websocket.Client, martynKey string, isAdmin bool) error {
@@ -656,6 +852,13 @@ func (app *App) setupHandlers() {
 			return nil
 		},
 
+		OnAdminStartNow: func(client *websocket.Client) error {
+			log.Printf("Admin %s triggered immediate start", client.GetSession().MartynKey[:8])
+			// Skip countdown and play immediately
+			app.startPlayCountdown(0) // 0 = play immediately
+			return nil
+		},
+
 		OnAdminStop: func(client *websocket.Client) error {
 			log.Printf("Admin %s stopped playback", client.GetSession().MartynKey[:8])
 			// Stop any active countdown
@@ -708,6 +911,29 @@ func (app *App) setupHandlers() {
 			return nil
 		},
 
+		OnAdminToggleBGM: func(client *websocket.Client) error {
+			// Can only toggle BGM when idle (no song playing) and no countdown
+			if !app.idle {
+				return fmt.Errorf("cannot toggle BGM while a song is playing")
+			}
+			if app.countdown.Active {
+				return fmt.Errorf("cannot toggle BGM during countdown")
+			}
+
+			if app.bgmActive {
+				log.Printf("Admin %s stopping BGM", client.GetSession().MartynKey[:8])
+				app.stopBGM()
+			} else {
+				if !app.bgmSettings.Enabled || app.bgmSettings.URL == "" {
+					return fmt.Errorf("BGM is not configured - set up in Settings")
+				}
+				log.Printf("Admin %s starting BGM", client.GetSession().MartynKey[:8])
+				app.startBGM()
+			}
+			app.broadcastState()
+			return nil
+		},
+
 		OnClientDisconnect: func(client *websocket.Client) {
 			if sess := client.GetSession(); sess != nil {
 				app.sessions.SetOnline(sess.MartynKey, false)
@@ -719,26 +945,40 @@ func (app *App) setupHandlers() {
 	// Queue change callback
 	app.queue.OnChange(func() {
 		app.broadcastState()
+		app.updateTicker()
 	})
 
 	// mpv track end callback
 	app.mpv.OnTrackEnd(func() {
-		// Check if autoplay is enabled
-		if !app.queue.GetAutoplay() {
-			log.Println("Track ended - autoplay disabled, waiting for manual skip")
-			app.broadcastState()
-			return
-		}
+		log.Println("Track ended - song finished playing")
 
 		// Get the current singer before advancing
 		currentSong := app.queue.Current()
 		currentSingerKey := ""
 		if currentSong != nil {
 			currentSingerKey = currentSong.AddedBy
+			log.Printf("Song '%s' finished, moving to history", currentSong.Title)
 		}
 
-		// Advance to next song
-		if next := app.queue.Next(); next != nil {
+		// Always advance the queue position (moves current song to history)
+		// Use Skip() instead of Next() because Skip() advances even at the last song
+		nextSong := app.queue.Skip()
+
+		// Check if autoplay is enabled
+		if !app.queue.GetAutoplay() {
+			log.Println("Autoplay disabled - showing holding screen, waiting for Play button")
+			// Start BGM if enabled while waiting
+			if app.bgmSettings.Enabled && app.bgmSettings.URL != "" {
+				app.startBGM()
+			} else {
+				app.showHoldingScreen()
+			}
+			app.broadcastState()
+			return
+		}
+
+		// Autoplay is enabled - continue to next song or show holding screen
+		if nextSong != nil {
 			// Start the inter-song countdown
 			app.startCountdown(currentSingerKey)
 		} else {
@@ -765,6 +1005,7 @@ func (app *App) getRoomState() models.RoomState {
 	playerState.CurrentSong = app.queue.Current()
 	playerState.BGMActive = app.bgmActive
 	playerState.BGMEnabled = app.bgmSettings.Enabled
+	playerState.Idle = app.idle
 
 	// Get countdown state safely
 	app.countdownMu.Lock()
@@ -783,6 +1024,39 @@ func (app *App) getRoomState() models.RoomState {
 func (app *App) broadcastState() {
 	state := app.getRoomState()
 	app.hub.BroadcastState(state)
+}
+
+// updateTicker updates the scrolling ticker on mpv with upcoming singers
+func (app *App) updateTicker() {
+	if !app.config.ScrollingTickerEnabled {
+		app.mpv.HideTicker()
+		return
+	}
+
+	// Get upcoming songs (after current position)
+	queueState := app.queue.GetState()
+	var entries []mpv.TickerEntry
+
+	// Show up to 5 upcoming songs
+	maxEntries := 5
+	for i := queueState.Position + 1; i < len(queueState.Songs) && len(entries) < maxEntries; i++ {
+		song := queueState.Songs[i]
+
+		// Look up singer name from their session
+		singerName := "Unknown"
+		if sess := app.sessions.Get(song.AddedBy); sess != nil && sess.DisplayName != "" {
+			singerName = sess.DisplayName
+		}
+
+		entries = append(entries, mpv.TickerEntry{
+			SingerName: singerName,
+			SongTitle:  song.Title,
+		})
+	}
+
+	if err := app.mpv.ShowTicker(entries); err != nil {
+		log.Printf("Failed to update ticker: %v", err)
+	}
 }
 
 // broadcastClientList sends the client list to all admin clients
@@ -809,10 +1083,12 @@ func (app *App) broadcastClientList() {
 			deviceName := ""
 			ipAddress := ""
 			var avatarConfig *models.AvatarConfig
+			nameLocked := false
 			if sess != nil {
 				deviceName = sess.DeviceName
 				ipAddress = sess.IPAddress
 				avatarConfig = sess.AvatarConfig
+				nameLocked = sess.NameLocked
 			}
 			clients = append(clients, websocket.ClientInfo{
 				MartynKey:    bu.MartynKey,
@@ -824,6 +1100,7 @@ func (app *App) broadcastClientList() {
 				IsBlocked:    true,
 				BlockReason:  bu.Reason,
 				AvatarConfig: avatarConfig,
+				NameLocked:   nameLocked,
 			})
 		}
 	}
@@ -832,42 +1109,111 @@ func (app *App) broadcastClientList() {
 }
 
 // playCurrentSong starts playing the current song in the queue
-// startBGM starts background music playback
+// startBGM starts background music playback with holding screen visible
 func (app *App) startBGM() {
 	if !app.bgmSettings.Enabled || app.bgmSettings.URL == "" {
+		log.Println("[BGM] Cannot start - not enabled or no URL configured")
 		return
 	}
 
-	log.Printf("Starting BGM: %s", app.bgmSettings.URL)
-	app.bgmActive = true
+	log.Printf("Starting BGM: %s (volume: %.0f)", app.bgmSettings.URL, app.bgmSettings.Volume)
 
-	// Set BGM volume (typically lower than main content)
-	if app.bgmSettings.Volume > 0 {
-		app.mpv.SetVolume(app.bgmSettings.Volume)
+	// Mark as idle (no song playing)
+	app.idle = true
+
+	// Generate the holding screen image
+	imagePath := app.generateHoldingScreenImage()
+	if imagePath == "" {
+		log.Println("[BGM] Failed to generate holding screen, cannot start BGM")
+		return
 	}
 
-	// Load BGM URL (works with YouTube via yt-dlp)
-	if err := app.mpv.LoadFile(app.bgmSettings.URL); err != nil {
-		log.Printf("Failed to load BGM: %v", err)
+	// Load BGM with holding screen image (includes fade-in)
+	if err := app.mpv.LoadBGMWithImage(imagePath, app.bgmSettings.URL, app.bgmSettings.Volume); err != nil {
+		log.Printf("Failed to load BGM with image: %v", err)
 		app.bgmActive = false
+		// Show holding screen on failure
+		app.showHoldingScreen()
+		return
 	}
+
+	app.bgmActive = true
+	app.broadcastState()
 }
 
-// stopBGM stops background music playback
+// stopBGM stops background music playback with fade-out
+// It broadcasts state to notify all clients (including admin UI) that BGM stopped
 func (app *App) stopBGM() {
 	if !app.bgmActive {
 		return
 	}
 
-	log.Println("Stopping BGM for song playback")
+	log.Println("Stopping BGM with fade-out")
+
+	// Stop the BGM audio with 2-second fade-out
+	if err := app.mpv.StopBGMWithFade(2 * time.Second); err != nil {
+		log.Printf("Failed to stop BGM audio: %v", err)
+	}
+
 	app.bgmActive = false
+
+	// Broadcast state to notify clients that BGM stopped
+	app.broadcastState()
+
+	// Show holding screen after stopping BGM (if we're still idle)
+	if app.idle {
+		app.showHoldingScreen()
+	}
+}
+
+// generateHoldingScreenImage creates and returns the path to the holding screen image
+func (app *App) generateHoldingScreenImage() string {
+	if app.holdingScreen == nil {
+		return ""
+	}
+
+	// Get connection URL
+	connectURL := app.autoDetectConnectURL()
+
+	// Check for next song in queue
+	var nextUp *holdingscreen.NextUpInfo
+	queueState := app.queue.GetState()
+
+	// Only show "next up" if there's actually an upcoming song
+	if queueState.Position < len(queueState.Songs) {
+		nextSong := queueState.Songs[queueState.Position]
+		singer := app.sessions.Get(nextSong.AddedBy)
+
+		nextUp = &holdingscreen.NextUpInfo{
+			SongTitle:  nextSong.Title,
+			SongArtist: nextSong.Artist,
+			SingerName: "Unknown",
+		}
+		if singer != nil {
+			nextUp.SingerName = singer.DisplayName
+			nextUp.AvatarConfig = singer.AvatarConfig
+		}
+	}
+
+	// Generate the holding screen
+	imagePath, err := app.holdingScreen.Generate(connectURL, nextUp)
+	if err != nil {
+		log.Printf("Failed to generate holding screen: %v", err)
+		return ""
+	}
+
+	return imagePath
 }
 
 // showHoldingScreen displays the holding screen with QR code and next-up info
+// If BGM is currently active, it reloads the image while preserving audio
 func (app *App) showHoldingScreen() {
 	if app.holdingScreen == nil {
 		return
 	}
+
+	// Mark as idle (not playing a song)
+	app.idle = true
 
 	// Get connection URL
 	connectURL := app.autoDetectConnectURL()
@@ -893,10 +1239,17 @@ func (app *App) showHoldingScreen() {
 		}
 	}
 
-	// Generate and display the holding screen
+	// Generate the holding screen image
 	imagePath, err := app.holdingScreen.Generate(connectURL, nextUp)
 	if err != nil {
 		log.Printf("Failed to generate holding screen: %v", err)
+		return
+	}
+
+	// If BGM is active, don't update the image - it disrupts the audio
+	// The holding screen will be updated when BGM stops
+	if app.bgmActive {
+		log.Println("Skipping holding screen update while BGM is playing")
 		return
 	}
 
@@ -1006,29 +1359,54 @@ func (app *App) startCountdown(currentSingerKey string) {
 // startPlayCountdown starts a countdown before playing (admin-initiated)
 // This gives the singer time to get ready before the song starts
 func (app *App) startPlayCountdown(seconds int) {
+	log.Printf("[DEBUG] startPlayCountdown called with %d seconds", seconds)
+
 	// Check if MPV is running, restart if not
 	if !app.mpv.IsRunning() {
-		log.Println("MPV not running - restarting before countdown")
+		log.Println("[DEBUG] MPV not running - restarting before countdown")
 		if err := app.mpv.Restart(); err != nil {
-			log.Printf("Failed to restart MPV: %v", err)
+			log.Printf("[DEBUG] Failed to restart MPV: %v", err)
 			return
 		}
-		log.Println("MPV restarted successfully")
+		log.Println("[DEBUG] MPV restarted successfully")
+	} else {
+		log.Println("[DEBUG] MPV is running")
+	}
+
+	// Stop BGM immediately when countdown starts
+	if app.bgmActive {
+		log.Println("[DEBUG] Stopping BGM for countdown")
+		app.stopBGM()
 	}
 
 	app.countdownMu.Lock()
+	log.Println("[DEBUG] Acquired countdown mutex")
 
 	// Stop any existing countdown
 	if app.countdownTicker != nil {
+		log.Println("[DEBUG] Stopping existing countdown ticker")
 		app.countdownTicker.Stop()
-		close(app.countdownStop)
+		app.countdownTicker = nil
+		if app.countdownStop != nil {
+			close(app.countdownStop)
+			app.countdownStop = nil
+		}
 	}
 
 	// Get the next song
 	nextSong := app.queue.Current()
 	if nextSong == nil {
-		log.Println("startPlayCountdown: no song in queue")
+		log.Println("[DEBUG] startPlayCountdown: NO SONG IN QUEUE - aborting")
 		app.countdownMu.Unlock()
+		return
+	}
+	log.Printf("[DEBUG] Next song: '%s' by '%s' (ID: %s)", nextSong.Title, nextSong.Artist, nextSong.ID)
+
+	// If seconds is 0, skip countdown and play immediately
+	if seconds <= 0 {
+		log.Println("[DEBUG] Immediate start requested (0 seconds) - playing now")
+		app.countdownMu.Unlock()
+		app.playNextSongNow()
 		return
 	}
 
@@ -1040,19 +1418,24 @@ func (app *App) startPlayCountdown(seconds int) {
 		NextSingerKey:    nextSong.AddedBy,
 		RequiresApproval: false, // Admin initiated, will auto-play
 	}
+	log.Printf("[DEBUG] Countdown state set: Active=%v, Seconds=%d", app.countdown.Active, app.countdown.SecondsRemaining)
 
 	// Create ticker and stop channel
 	app.countdownTicker = time.NewTicker(1 * time.Second)
 	app.countdownStop = make(chan struct{})
 
-	log.Printf("Starting %d-second play countdown", seconds)
+	log.Printf("[DEBUG] Starting %d-second play countdown - ticker created", seconds)
 
 	// Unlock BEFORE calling broadcastState to avoid deadlock
 	app.countdownMu.Unlock()
+	log.Println("[DEBUG] Released countdown mutex")
 
 	// Show holding screen with next up info and countdown
+	log.Println("[DEBUG] Calling showHoldingScreen")
 	app.showHoldingScreen()
+	log.Println("[DEBUG] Calling broadcastState")
 	app.broadcastState()
+	log.Println("[DEBUG] Countdown setup complete, goroutine starting")
 
 	go func() {
 		for {
@@ -1103,8 +1486,11 @@ func (app *App) playNextSongNow() {
 	app.countdownMu.Lock()
 	if app.countdownTicker != nil {
 		app.countdownTicker.Stop()
-		close(app.countdownStop)
 		app.countdownTicker = nil
+	}
+	if app.countdownStop != nil {
+		close(app.countdownStop)
+		app.countdownStop = nil
 	}
 	app.countdown = models.CountdownState{}
 	app.countdownMu.Unlock()
@@ -1118,6 +1504,9 @@ func (app *App) playCurrentSong() {
 	// Stop BGM if active
 	app.stopBGM()
 
+	// Mark as not idle (playing a song)
+	app.idle = false
+
 	song := app.queue.Current()
 	if song == nil {
 		log.Println("playCurrentSong: no current song in queue")
@@ -1126,12 +1515,17 @@ func (app *App) playCurrentSong() {
 
 	log.Printf("Playing: '%s' by '%s' (file: %s)", song.Title, song.Artist, song.VideoURL)
 
-	// Save current singer's avatar to PNG file for external use
-	if singer := app.sessions.Get(song.AddedBy); singer != nil && singer.AvatarConfig != nil {
-		if avatarPath, err := app.holdingScreen.SaveCurrentSingerAvatar(singer.AvatarConfig); err != nil {
-			log.Printf("Failed to save singer avatar: %v", err)
-		} else if avatarPath != "" {
-			log.Printf("Saved current singer avatar to: %s", avatarPath)
+	// Get singer's display name for overlay
+	singerName := "Unknown"
+	if singer := app.sessions.Get(song.AddedBy); singer != nil {
+		singerName = singer.DisplayName
+		// Save current singer's avatar to PNG file for external use
+		if singer.AvatarConfig != nil {
+			if avatarPath, err := app.holdingScreen.SaveCurrentSingerAvatar(singer.AvatarConfig); err != nil {
+				log.Printf("Failed to save singer avatar: %v", err)
+			} else if avatarPath != "" {
+				log.Printf("Saved current singer avatar to: %s", avatarPath)
+			}
 		}
 	}
 
@@ -1140,6 +1534,8 @@ func (app *App) playCurrentSong() {
 		log.Printf("Using CDG+Audio: cdg=%s, audio=%s", song.CDGPath, song.AudioPath)
 		if err := app.mpv.LoadCDG(song.CDGPath, song.AudioPath); err != nil {
 			log.Printf("Failed to load CDG '%s': %v", song.CDGPath, err)
+		} else {
+			app.showSingerOverlay(singerName, song.Title)
 		}
 		return
 	}
@@ -1150,13 +1546,31 @@ func (app *App) playCurrentSong() {
 		log.Printf("Using vocal mix: instr=%s, vocal=%s, gain=%.2f", song.InstrPath, song.VocalPath, gain)
 		if err := app.mpv.SetVocalMix(song.InstrPath, song.VocalPath, gain); err != nil {
 			log.Printf("Failed to set vocal mix: %v", err)
+		} else {
+			app.showSingerOverlay(singerName, song.Title)
 		}
 		return
 	}
 
 	// Play original video/audio
+	app.mpv.SetPlayingSong(true) // Mark as song playback for end detection
 	if err := app.mpv.LoadFile(song.VideoURL); err != nil {
 		log.Printf("Failed to load file '%s': %v", song.VideoURL, err)
+	} else {
+		app.mpv.StartPlaybackMonitor() // Start monitoring for song end
+		app.showSingerOverlay(singerName, song.Title)
+	}
+}
+
+// showSingerOverlay displays the singer's name on screen if enabled
+func (app *App) showSingerOverlay(singerName, songTitle string) {
+	if !app.config.SingerNameOverlay {
+		return
+	}
+	// Show "Now singing: [Name]" for 5 seconds
+	overlayText := fmt.Sprintf("🎤 %s", singerName)
+	if err := app.mpv.ShowOverlay(overlayText, 5000); err != nil {
+		log.Printf("Failed to show singer overlay: %v", err)
 	}
 }
 
@@ -1223,8 +1637,13 @@ func (app *App) Run() {
 	mux.HandleFunc("/api/features", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"youtube_enabled": app.config.YouTubeAPIKey != "",
-			"admin_localhost_only": app.admin.IsLocalhostOnly(),
+			"youtube_enabled":         app.config.YouTubeAPIKey != "",
+			"admin_localhost_only":    app.admin.IsLocalhostOnly(),
+			"pitch_control_enabled":   app.config.PitchControlEnabled,
+			"tempo_control_enabled":   app.config.TempoControlEnabled,
+			"fair_rotation_enabled":   app.config.FairRotationEnabled,
+			"scrolling_ticker_enabled": app.config.ScrollingTickerEnabled,
+			"singer_name_overlay":     app.config.SingerNameOverlay,
 		})
 	})
 
@@ -1262,6 +1681,7 @@ func (app *App) Run() {
 	mux.HandleFunc("/api/admin/database", app.admin.Middleware(app.handleDatabase))
 	mux.HandleFunc("/api/admin/bgm", app.admin.Middleware(app.handleBGM))
 	mux.HandleFunc("/api/admin/icecast-streams", app.admin.Middleware(app.handleIcecastStreams))
+	mux.HandleFunc("/api/admin/browse-dirs", app.admin.Middleware(app.handleBrowseDirs))
 	mux.HandleFunc("/api/connect-url", app.handleConnectURL) // Public - returns selected connection URL
 
 	// Avatar API endpoints
@@ -2154,6 +2574,13 @@ type SettingsPayload struct {
 	YouTubeAPIKey string `json:"youtube_api_key"`
 	VideoPlayer   string `json:"video_player"`
 	DataDir       string `json:"data_dir"`
+
+	// Feature toggles
+	PitchControlEnabled    bool `json:"pitch_control_enabled"`
+	TempoControlEnabled    bool `json:"tempo_control_enabled"`
+	FairRotationEnabled    bool `json:"fair_rotation_enabled"`
+	ScrollingTickerEnabled bool `json:"scrolling_ticker_enabled"`
+	SingerNameOverlay      bool `json:"singer_name_overlay"`
 }
 
 // handleSettings handles GET/POST /api/admin/settings
@@ -2172,6 +2599,13 @@ func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			YouTubeAPIKey: app.config.YouTubeAPIKey,
 			VideoPlayer:   app.config.VideoPlayer,
 			DataDir:       app.config.DataDir,
+
+			// Feature toggles
+			PitchControlEnabled:    app.config.PitchControlEnabled,
+			TempoControlEnabled:    app.config.TempoControlEnabled,
+			FairRotationEnabled:    app.config.FairRotationEnabled,
+			ScrollingTickerEnabled: app.config.ScrollingTickerEnabled,
+			SingerNameOverlay:      app.config.SingerNameOverlay,
 		}
 		json.NewEncoder(w).Encode(settings)
 
@@ -2191,6 +2625,27 @@ func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Admin PIN changed - all non-local admin sessions have been invalidated")
 		}
 
+		// Update feature toggles immediately (no restart required)
+		app.config.PitchControlEnabled = settings.PitchControlEnabled
+		app.config.TempoControlEnabled = settings.TempoControlEnabled
+		app.config.FairRotationEnabled = settings.FairRotationEnabled
+		app.config.ScrollingTickerEnabled = settings.ScrollingTickerEnabled
+		app.config.SingerNameOverlay = settings.SingerNameOverlay
+
+		// Apply fair rotation setting to queue manager
+		app.queue.SetFairRotation(settings.FairRotationEnabled)
+
+		// Update the scrolling ticker based on new setting
+		app.updateTicker()
+
+		// Helper to convert bool to env string
+		boolToEnv := func(b bool) string {
+			if b {
+				return "true"
+			}
+			return "false"
+		}
+
 		// Build .env content
 		envContent := fmt.Sprintf(`# SongMartyn Configuration
 # Updated via admin panel
@@ -2203,8 +2658,18 @@ VIDEO_PLAYER=%s
 DATA_DIR=%s
 TLS_CERT=%s
 TLS_KEY=%s
+
+# Feature Toggles
+PITCH_CONTROL_ENABLED=%s
+TEMPO_CONTROL_ENABLED=%s
+FAIR_ROTATION_ENABLED=%s
+SCROLLING_TICKER_ENABLED=%s
+SINGER_NAME_OVERLAY=%s
 `, settings.HTTPSPort, settings.HTTPPort, settings.AdminPIN, settings.YouTubeAPIKey,
-			settings.VideoPlayer, settings.DataDir, app.config.CertFile, app.config.KeyFile)
+			settings.VideoPlayer, settings.DataDir, app.config.CertFile, app.config.KeyFile,
+			boolToEnv(settings.PitchControlEnabled), boolToEnv(settings.TempoControlEnabled),
+			boolToEnv(settings.FairRotationEnabled), boolToEnv(settings.ScrollingTickerEnabled),
+			boolToEnv(settings.SingerNameOverlay))
 
 		// Write .env file
 		if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
@@ -2766,11 +3231,27 @@ func (app *App) handleBGM(w http.ResponseWriter, r *http.Request) {
 		log.Printf("BGM settings updated: enabled=%v, source=%s, url=%s, volume=%.0f",
 			settings.Enabled, settings.SourceType, settings.URL, settings.Volume)
 
+		// Save to .env file
+		enabledStr := "false"
+		if settings.Enabled {
+			enabledStr = "true"
+		}
+		if err := saveEnvFile(map[string]string{
+			"BGM_ENABLED": enabledStr,
+			"BGM_SOURCE":  string(settings.SourceType),
+			"BGM_URL":     settings.URL,
+			"BGM_VOLUME":  fmt.Sprintf("%.0f", settings.Volume),
+		}); err != nil {
+			log.Printf("Warning: Failed to save BGM settings to .env: %v", err)
+		}
+
 		// If BGM was disabled, stop any active BGM
 		if !settings.Enabled && app.bgmActive {
 			app.stopBGM()
-			app.broadcastState()
 		}
+
+		// Always broadcast state so clients get updated bgm_enabled flag
+		app.broadcastState()
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":   "ok",
@@ -2930,4 +3411,81 @@ func (app *App) handleIcecastStreams(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(streams)
+}
+
+// handleBrowseDirs handles GET /api/admin/browse-dirs - list directories for file browser
+func (app *App) handleBrowseDirs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get path from query parameter, default to user's home directory
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			http.Error(w, "Failed to get home directory", http.StatusInternalServerError)
+			return
+		}
+		path = home
+	}
+
+	// Clean and resolve the path
+	path = filepath.Clean(path)
+
+	// Check if path exists and is a directory
+	info, err := os.Stat(path)
+	if err != nil {
+		http.Error(w, "Path not found: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !info.IsDir() {
+		http.Error(w, "Path is not a directory", http.StatusBadRequest)
+		return
+	}
+
+	// Read directory contents
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		http.Error(w, "Failed to read directory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type DirEntry struct {
+		Name  string `json:"name"`
+		Path  string `json:"path"`
+		IsDir bool   `json:"is_dir"`
+	}
+
+	var dirs []DirEntry
+	for _, entry := range entries {
+		// Only include directories, skip hidden files (starting with .)
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			dirs = append(dirs, DirEntry{
+				Name:  entry.Name(),
+				Path:  filepath.Join(path, entry.Name()),
+				IsDir: true,
+			})
+		}
+	}
+
+	// Sort alphabetically
+	sort.Slice(dirs, func(i, j int) bool {
+		return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name)
+	})
+
+	response := struct {
+		Current string     `json:"current"`
+		Parent  string     `json:"parent"`
+		Dirs    []DirEntry `json:"dirs"`
+	}{
+		Current: path,
+		Parent:  filepath.Dir(path),
+		Dirs:    dirs,
+	}
+
+	json.NewEncoder(w).Encode(response)
 }
