@@ -871,8 +871,12 @@ func (app *App) setupHandlers() {
 			app.queue.Skip()
 			// Brief delay to ensure MPV is ready for new content
 			time.Sleep(100 * time.Millisecond)
-			// Show holding screen with next song info
-			app.showHoldingScreen()
+			// Start BGM if enabled, otherwise show holding screen
+			if app.bgmSettings.Enabled && app.bgmSettings.URL != "" {
+				app.startBGM()
+			} else {
+				app.showHoldingScreen()
+			}
 			app.broadcastState()
 			return nil
 		},

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAdminStore } from '../stores/adminStore';
 import { useLibraryStore } from '../stores/libraryStore';
-import { useRoomStore, selectQueue, selectQueuePosition, selectAutoplay, selectCountdown } from '../stores/roomStore';
+import { useRoomStore, selectQueue, selectQueuePosition, selectAutoplay, selectCountdown, selectIdle, selectBgmActive, selectBgmEnabled } from '../stores/roomStore';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { wsService } from '../services/websocket';
 import type { ClientInfo, LibraryLocation, AvatarConfig, BGMSourceType, IcecastStream } from '../types';
@@ -336,6 +336,98 @@ function EditNameModal({ client, onClose }: {
   );
 }
 
+function AdminConfirmModal({ client, onConfirm, onClose }: {
+  client: ClientInfo;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const { authenticate } = useAdminStore();
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsProcessing(true);
+    setError('');
+
+    // Validate PIN using the existing authenticate endpoint
+    const success = await authenticate(pin);
+    if (success) {
+      onConfirm();
+      onClose();
+    } else {
+      setError('Invalid PIN');
+    }
+    setIsProcessing(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80" onClick={onClose}>
+      <div className="bg-matte-gray rounded-2xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-white">Confirm Admin Promotion</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* User Info */}
+        <div className="bg-matte-black rounded-xl p-3 mb-4">
+          <div className="flex items-center gap-3">
+            <ClientAvatar config={client.avatar_config} size={40} />
+            <div className="flex-1 min-w-0">
+              <span className="text-white font-medium truncate block">{client.display_name}</span>
+              <div className="text-gray-400 text-sm truncate">{client.device_name}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-3 mb-4">
+          <p className="text-yellow-400 text-sm">
+            <strong>Warning:</strong> Making this user an admin will give them full control over the karaoke system, including managing other users and settings.
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <label className="block text-sm text-gray-400 mb-2">Enter Admin PIN to confirm</label>
+          <input
+            type="password"
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+            placeholder="Enter PIN"
+            className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon mb-4"
+            autoFocus
+          />
+
+          {error && (
+            <p className="text-red-400 text-sm mb-4">{error}</p>
+          )}
+
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-3 font-semibold rounded-xl transition-colors bg-matte-black text-gray-400 hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isProcessing || !pin}
+              className="flex-1 py-3 font-semibold rounded-xl transition-colors disabled:opacity-50 bg-yellow-neon text-indigo-deep hover:bg-yellow-400"
+            >
+              {isProcessing ? 'Confirming...' : 'Make Admin'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ClientRow({ client, onToggleAdmin, onToggleAFK, onAction, onUnblock, onEditName, onToggleNameLock }: {
   client: ClientInfo;
   onToggleAdmin: () => void;
@@ -447,9 +539,22 @@ function ClientList() {
   const { clients, setAdminStatus, setAFKStatus, unblockClient, setClientNameLock } = useAdminStore();
   const [modalClient, setModalClient] = useState<ClientInfo | null>(null);
   const [editNameClient, setEditNameClient] = useState<ClientInfo | null>(null);
+  const [adminConfirmClient, setAdminConfirmClient] = useState<ClientInfo | null>(null);
 
   const handleToggleAdmin = async (client: ClientInfo) => {
-    await setAdminStatus(client.martyn_key, !client.is_admin);
+    if (client.is_admin) {
+      // Demoting - can do directly
+      await setAdminStatus(client.martyn_key, false);
+    } else {
+      // Promoting - requires confirmation with PIN
+      setAdminConfirmClient(client);
+    }
+  };
+
+  const confirmAdminPromotion = async () => {
+    if (adminConfirmClient) {
+      await setAdminStatus(adminConfirmClient.martyn_key, true);
+    }
   };
 
   const handleToggleAFK = async (client: ClientInfo) => {
@@ -531,11 +636,161 @@ function ClientList() {
           onClose={() => setEditNameClient(null)}
         />
       )}
+
+      {adminConfirmClient && (
+        <AdminConfirmModal
+          client={adminConfirmClient}
+          onConfirm={confirmAdminPromotion}
+          onClose={() => setAdminConfirmClient(null)}
+        />
+      )}
     </>
   );
 }
 
 const API_BASE = import.meta.env.DEV ? 'https://localhost:8443' : '';
+
+interface DirEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+}
+
+interface BrowseDirsResponse {
+  current: string;
+  parent: string;
+  dirs: DirEntry[];
+}
+
+function DirectoryPicker({
+  isOpen,
+  onClose,
+  onSelect
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onSelect: (path: string) => void;
+}) {
+  const [currentPath, setCurrentPath] = useState('');
+  const [parentPath, setParentPath] = useState('');
+  const [directories, setDirectories] = useState<DirEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const fetchDirectories = async (path?: string) => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = path ? `?path=${encodeURIComponent(path)}` : '';
+      const res = await fetch(`${API_BASE}/api/admin/browse-dirs${params}`, {
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      const data: BrowseDirsResponse = await res.json();
+      setCurrentPath(data.current);
+      setParentPath(data.parent);
+      setDirectories(data.dirs);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to browse');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchDirectories();
+    }
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      <div className="bg-matte-gray rounded-2xl w-full max-w-lg max-h-[80vh] flex flex-col">
+        <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-white">Select Folder</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-6 py-3 bg-matte-black/50 border-b border-white/5">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">Current:</span>
+            <code className="text-sm text-yellow-neon truncate flex-1">{currentPath}</code>
+          </div>
+        </div>
+
+        {error && (
+          <div className="px-6 py-2 bg-red-500/20 text-red-400 text-sm">
+            {error}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="px-6 py-8 text-center text-gray-500">Loading...</div>
+          ) : (
+            <div className="divide-y divide-white/5">
+              {currentPath !== parentPath && (
+                <button
+                  onClick={() => fetchDirectories(parentPath)}
+                  className="w-full px-6 py-3 flex items-center gap-3 hover:bg-white/5 transition-colors text-left"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                  </svg>
+                  <span className="text-gray-300">..</span>
+                  <span className="text-xs text-gray-500">(parent)</span>
+                </button>
+              )}
+              {directories.map((dir) => (
+                <button
+                  key={dir.path}
+                  onClick={() => fetchDirectories(dir.path)}
+                  className="w-full px-6 py-3 flex items-center gap-3 hover:bg-white/5 transition-colors text-left"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-neon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                  </svg>
+                  <span className="text-white">{dir.name}</span>
+                </button>
+              ))}
+              {directories.length === 0 && !loading && (
+                <div className="px-6 py-8 text-center text-gray-500">
+                  No subdirectories found
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="px-6 py-4 border-t border-white/10 flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-500 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => {
+              onSelect(currentPath);
+              onClose();
+            }}
+            className="flex-1 px-4 py-2 bg-yellow-neon text-indigo-deep font-semibold rounded-lg hover:scale-[1.02] transition-transform"
+          >
+            Select This Folder
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function LibraryManagement() {
   const { locations, stats, isLoading, error, fetchLocations, fetchStats, addLocation, removeLocation, scanLocation } = useLibraryStore();
@@ -543,6 +798,7 @@ function LibraryManagement() {
   const [newPath, setNewPath] = useState('');
   const [newName, setNewName] = useState('');
   const [scanningId, setScanningId] = useState<number | null>(null);
+  const [showDirPicker, setShowDirPicker] = useState(false);
   const { activeHelp, openHelp, closeHelp } = useHelpModal();
 
   useEffect(() => {
@@ -554,11 +810,30 @@ function LibraryManagement() {
     e.preventDefault();
     if (!newPath || !newName) return;
 
-    const success = await addLocation(newPath, newName);
+    // Save values before clearing
+    const pathToAdd = newPath;
+    const nameToAdd = newName;
+
+    const success = await addLocation(pathToAdd, nameToAdd);
     if (success) {
       setNewPath('');
       setNewName('');
       setShowAddForm(false);
+
+      // Auto-scan the newly added location
+      // Get the latest locations to find the new one
+      await fetchLocations();
+      const updatedLocations = useLibraryStore.getState().locations;
+      const newLocation = updatedLocations.find(loc => loc.name === nameToAdd);
+      if (newLocation) {
+        setScanningId(newLocation.id);
+        const count = await scanLocation(newLocation.id);
+        setScanningId(null);
+        if (count !== null) {
+          alert(`Found ${count} songs in ${newLocation.name}`);
+          fetchStats();
+        }
+      }
     }
   };
 
@@ -612,13 +887,22 @@ function LibraryManagement() {
         <form onSubmit={handleAddLocation} className="px-6 py-4 border-b border-white/5 space-y-3">
           <div>
             <label className="block text-sm text-gray-400 mb-1">Folder Path</label>
-            <input
-              type="text"
-              value={newPath}
-              onChange={(e) => setNewPath(e.target.value)}
-              placeholder="/path/to/music/folder"
-              className="w-full px-4 py-2 bg-matte-black rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
-            />
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newPath}
+                onChange={(e) => setNewPath(e.target.value)}
+                placeholder="/path/to/music/folder"
+                className="flex-1 px-4 py-2 bg-matte-black rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon"
+              />
+              <button
+                type="button"
+                onClick={() => setShowDirPicker(true)}
+                className="px-4 py-2 bg-blue-500/20 text-blue-400 rounded-lg font-medium hover:bg-blue-500/30 transition-colors whitespace-nowrap"
+              >
+                Browse
+              </button>
+            </div>
           </div>
           <div>
             <label className="block text-sm text-gray-400 mb-1">Display Name</label>
@@ -679,6 +963,18 @@ function LibraryManagement() {
     {activeHelp && (
       <HelpModal topic={activeHelp} isOpen={true} onClose={closeHelp} />
     )}
+    <DirectoryPicker
+      isOpen={showDirPicker}
+      onClose={() => setShowDirPicker(false)}
+      onSelect={(path) => {
+        setNewPath(path);
+        // Auto-generate a name from the folder name
+        const folderName = path.split('/').pop() || path;
+        if (!newName) {
+          setNewName(folderName);
+        }
+      }}
+    />
     </>
   );
 }
@@ -975,6 +1271,12 @@ interface ServerSettings {
   youtube_api_key: string;
   video_player: string;
   data_dir: string;
+  // Feature toggles
+  pitch_control_enabled: boolean;
+  tempo_control_enabled: boolean;
+  fair_rotation_enabled: boolean;
+  scrolling_ticker_enabled: boolean;
+  singer_name_overlay: boolean;
 }
 
 interface SystemInfo {
@@ -1009,6 +1311,12 @@ function GeneralSettings() {
     youtube_api_key: '',
     video_player: 'mpv',
     data_dir: './data',
+    // Feature toggles
+    pitch_control_enabled: true,
+    tempo_control_enabled: true,
+    fair_rotation_enabled: false,
+    scrolling_ticker_enabled: true,
+    singer_name_overlay: true,
   });
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -1266,7 +1574,7 @@ function GeneralSettings() {
             </div>
             <p className="text-xs text-gray-500 mb-2">Leave empty for localhost-only access</p>
             <input
-              type="text"
+              type="password"
               value={settings.admin_pin}
               onChange={(e) => setSettings({ ...settings, admin_pin: e.target.value })}
               placeholder="Enter PIN for remote admin access"
@@ -1312,6 +1620,92 @@ function GeneralSettings() {
               placeholder="./data"
               className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon font-mono"
             />
+          </div>
+
+          {/* Feature Toggles */}
+          <div className="border-t border-white/5 pt-4 mt-4">
+            <h3 className="text-md font-semibold text-white mb-4">Feature Toggles</h3>
+            <div className="space-y-3">
+              <label className="flex items-center justify-between cursor-pointer group">
+                <div>
+                  <span className="text-white group-hover:text-yellow-neon transition-colors">Pitch Control</span>
+                  <p className="text-xs text-gray-500">Allow key/pitch changes for songs</p>
+                </div>
+                <div className={`relative w-12 h-7 rounded-full transition-colors ${settings.pitch_control_enabled ? 'bg-yellow-neon' : 'bg-gray-600'}`}>
+                  <input
+                    type="checkbox"
+                    checked={settings.pitch_control_enabled}
+                    onChange={(e) => setSettings({ ...settings, pitch_control_enabled: e.target.checked })}
+                    className="sr-only"
+                  />
+                  <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${settings.pitch_control_enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                </div>
+              </label>
+
+              <label className="flex items-center justify-between cursor-pointer group">
+                <div>
+                  <span className="text-white group-hover:text-yellow-neon transition-colors">Tempo Control</span>
+                  <p className="text-xs text-gray-500">Allow speed/tempo changes for songs</p>
+                </div>
+                <div className={`relative w-12 h-7 rounded-full transition-colors ${settings.tempo_control_enabled ? 'bg-yellow-neon' : 'bg-gray-600'}`}>
+                  <input
+                    type="checkbox"
+                    checked={settings.tempo_control_enabled}
+                    onChange={(e) => setSettings({ ...settings, tempo_control_enabled: e.target.checked })}
+                    className="sr-only"
+                  />
+                  <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${settings.tempo_control_enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                </div>
+              </label>
+
+              <label className="flex items-center justify-between cursor-pointer group">
+                <div>
+                  <span className="text-white group-hover:text-yellow-neon transition-colors">Singer Name Overlay</span>
+                  <p className="text-xs text-gray-500">Show singer name at start of each song</p>
+                </div>
+                <div className={`relative w-12 h-7 rounded-full transition-colors ${settings.singer_name_overlay ? 'bg-yellow-neon' : 'bg-gray-600'}`}>
+                  <input
+                    type="checkbox"
+                    checked={settings.singer_name_overlay}
+                    onChange={(e) => setSettings({ ...settings, singer_name_overlay: e.target.checked })}
+                    className="sr-only"
+                  />
+                  <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${settings.singer_name_overlay ? 'translate-x-6' : 'translate-x-1'}`} />
+                </div>
+              </label>
+
+              <label className="flex items-center justify-between cursor-pointer group">
+                <div>
+                  <span className="text-white group-hover:text-yellow-neon transition-colors">Scrolling Ticker</span>
+                  <p className="text-xs text-gray-500">Show upcoming singers on display</p>
+                </div>
+                <div className={`relative w-12 h-7 rounded-full transition-colors ${settings.scrolling_ticker_enabled ? 'bg-yellow-neon' : 'bg-gray-600'}`}>
+                  <input
+                    type="checkbox"
+                    checked={settings.scrolling_ticker_enabled}
+                    onChange={(e) => setSettings({ ...settings, scrolling_ticker_enabled: e.target.checked })}
+                    className="sr-only"
+                  />
+                  <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${settings.scrolling_ticker_enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                </div>
+              </label>
+
+              <label className="flex items-center justify-between cursor-pointer group">
+                <div>
+                  <span className="text-white group-hover:text-yellow-neon transition-colors">Fair Rotation</span>
+                  <p className="text-xs text-gray-500">Queue songs by singer rotation instead of FIFO</p>
+                </div>
+                <div className={`relative w-12 h-7 rounded-full transition-colors ${settings.fair_rotation_enabled ? 'bg-yellow-neon' : 'bg-gray-600'}`}>
+                  <input
+                    type="checkbox"
+                    checked={settings.fair_rotation_enabled}
+                    onChange={(e) => setSettings({ ...settings, fair_rotation_enabled: e.target.checked })}
+                    className="sr-only"
+                  />
+                  <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${settings.fair_rotation_enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                </div>
+              </label>
+            </div>
           </div>
 
           {message && (
@@ -1988,7 +2382,7 @@ function QueueManagement() {
   const queue = useRoomStore(selectQueue);
   const currentPosition = useRoomStore(selectQueuePosition);
   const autoplay = useRoomStore(selectAutoplay);
-  const countdown = useRoomStore(selectCountdown);
+  const idle = useRoomStore(selectIdle);
   const clients = useAdminStore((state) => state.clients);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
@@ -2025,21 +2419,6 @@ function QueueManagement() {
   const handleToggleAutoplay = () => {
     wsService.setAutoplay(!autoplay);
   };
-
-  const handlePlay = () => {
-    // Admin play always triggers adminPlayNext which starts a countdown
-    wsService.adminPlayNext();
-  };
-
-  const handleStop = () => {
-    // Only stop if something is playing (current position is within queue)
-    if (currentPosition < queue.length) {
-      wsService.adminStop();
-    }
-  };
-
-  // Check if a song is currently playing
-  const isPlaying = currentPosition < queue.length;
 
   const handleShuffle = () => {
     wsService.queueShuffle();
@@ -2100,49 +2479,8 @@ function QueueManagement() {
 
   return (
     <div className="space-y-6">
-      {/* Queue Controls */}
-      {/* Countdown Alert Banner */}
-      {countdown.active && (
-        <div className={`rounded-2xl overflow-hidden mb-6 ${
-          countdown.requires_approval
-            ? 'bg-orange-500/20 border border-orange-500/30'
-            : 'bg-cyan-500/20 border border-cyan-500/30'
-        }`}>
-          <div className="px-6 py-4 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl font-bold ${
-                countdown.requires_approval ? 'bg-orange-500/30 text-orange-400' : 'bg-cyan-500/30 text-cyan-400'
-              }`}>
-                {countdown.seconds_remaining}
-              </div>
-              <div>
-                <h3 className={`font-semibold ${countdown.requires_approval ? 'text-orange-400' : 'text-cyan-400'}`}>
-                  {countdown.requires_approval ? 'Waiting for Admin Approval' : 'Next Song Starting Soon'}
-                </h3>
-                <p className="text-sm text-gray-400">
-                  {countdown.requires_approval
-                    ? 'Different singer - tap "Start Now" to begin'
-                    : `Same singer - auto-starting in ${countdown.seconds_remaining}s`
-                  }
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={handlePlay}
-              className={`px-6 py-3 font-bold rounded-xl transition-colors ${
-                countdown.requires_approval
-                  ? 'bg-orange-500 text-white hover:bg-orange-600'
-                  : 'bg-cyan-500 text-white hover:bg-cyan-600'
-              }`}
-            >
-              Start Now
-            </button>
-          </div>
-        </div>
-      )}
-
       <div className="bg-matte-gray rounded-2xl overflow-hidden">
-        {/* Header with prominent Play/Stop buttons */}
+        {/* Header */}
         <div className="px-6 py-4 border-b border-white/5">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -2150,32 +2488,6 @@ function QueueManagement() {
               <p className="text-sm text-gray-400">
                 {queueSongs.length} upcoming • {historySongs.length} in history
               </p>
-            </div>
-
-            {/* Prominent Play/Stop Toggle Button */}
-            <div className="flex items-center gap-3">
-              {isPlaying ? (
-                <button
-                  onClick={handleStop}
-                  className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-yellow-500 to-amber-400 text-gray-900 font-bold rounded-xl hover:from-yellow-400 hover:to-amber-300 transition-all shadow-lg shadow-yellow-500/30 hover:shadow-yellow-400/40 hover:scale-105 active:scale-95"
-                >
-                  <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M6 6h12v12H6z" />
-                  </svg>
-                  Stop
-                </button>
-              ) : (
-                <button
-                  onClick={handlePlay}
-                  disabled={queueSongs.length === 0}
-                  className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-cyan-500 to-cyan-400 text-gray-900 font-bold rounded-xl hover:from-cyan-400 hover:to-cyan-300 transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-cyan-500/30 hover:shadow-cyan-400/40 hover:scale-105 active:scale-95"
-                >
-                  <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                  Play
-                </button>
-              )}
             </div>
           </div>
 
@@ -2251,6 +2563,77 @@ function QueueManagement() {
               Clear Queue
             </button>
           </div>
+
+          {/* Pitch & Tempo Controls (only when playing) */}
+          {!idle && (
+            <div className="mt-4 pt-4 border-t border-white/5">
+              <div className="flex items-center gap-6">
+                {/* Key Change (Pitch) */}
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-sm text-gray-400">Key</label>
+                    <span className="text-sm font-mono text-white">
+                      {(() => {
+                        const currentSong = queue[currentPosition];
+                        const semitones = currentSong?.key_change || 0;
+                        if (semitones === 0) return '0';
+                        return semitones > 0 ? `+${semitones}` : `${semitones}`;
+                      })()}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-12"
+                    max="12"
+                    step="1"
+                    value={queue[currentPosition]?.key_change || 0}
+                    onChange={(e) => wsService.setKeyChange(parseInt(e.target.value, 10))}
+                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-yellow-neon"
+                  />
+                  <div className="flex justify-between text-xs text-gray-500 mt-0.5">
+                    <span>-12</span>
+                    <span>0</span>
+                    <span>+12</span>
+                  </div>
+                </div>
+
+                {/* Tempo */}
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-sm text-gray-400">Tempo</label>
+                    <span className="text-sm font-mono text-white">
+                      {((queue[currentPosition]?.tempo_change || 1) * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="2.0"
+                    step="0.05"
+                    value={queue[currentPosition]?.tempo_change || 1}
+                    onChange={(e) => wsService.setTempoChange(parseFloat(e.target.value))}
+                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  />
+                  <div className="flex justify-between text-xs text-gray-500 mt-0.5">
+                    <span>50%</span>
+                    <span>100%</span>
+                    <span>200%</span>
+                  </div>
+                </div>
+
+                {/* Reset Button */}
+                <button
+                  onClick={() => {
+                    wsService.setKeyChange(0);
+                    wsService.setTempoChange(1.0);
+                  }}
+                  className="px-3 py-2 bg-gray-700 text-gray-300 text-sm rounded-lg hover:bg-gray-600 transition-colors"
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Queue List */}
@@ -2500,7 +2883,7 @@ function AdminTabButton({ label, icon, active, onClick }: {
 }
 
 export function Admin() {
-  const { isAuthenticated, isLocal, checkAuth, setClients, fetchClients, logout } = useAdminStore();
+  const { isAuthenticated, isLocal, checkAuth, setClients, fetchClients, logout, clients } = useAdminStore();
   const [isLoading, setIsLoading] = useState(true);
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTabState] = useState<AdminTab>('clients');
@@ -2532,6 +2915,47 @@ export function Admin() {
 
   // Get connection state from roomStore
   const isConnected = useRoomStore((state) => state.isConnected);
+
+  // Playback state for header controls
+  const queue = useRoomStore(selectQueue);
+  const currentPosition = useRoomStore(selectQueuePosition);
+  const countdown = useRoomStore(selectCountdown);
+  const idle = useRoomStore(selectIdle);
+  const bgmActive = useRoomStore(selectBgmActive);
+  const bgmEnabled = useRoomStore(selectBgmEnabled);
+
+  // Derived playback state
+  const isPlaying = !idle || countdown.active;
+  const canToggleBGM = idle && !countdown.active;
+  const queueSongs = queue.filter((_, index) => index >= currentPosition);
+
+  // Playback handlers
+  const handlePlay = () => {
+    wsService.adminPlayNext();
+  };
+
+  const handleStartNow = () => {
+    wsService.adminStartNow();
+  };
+
+  const handleStop = () => {
+    if (!idle || countdown.active) {
+      wsService.adminStop();
+    }
+  };
+
+  const handleToggleBGM = () => {
+    wsService.adminToggleBGM();
+  };
+
+  // Helper to get singer name from MartynKey
+  const getSingerName = (martynKey: string): string => {
+    const client = clients.find((c) => c.martyn_key === martynKey);
+    return client?.display_name || 'Unknown';
+  };
+
+  // Get next song info
+  const nextSong = queueSongs[0];
 
   // Fetch client list when connected
   useEffect(() => {
@@ -2602,25 +3026,113 @@ export function Admin() {
   return (
     <div className="min-h-screen">
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 bg-matte-gray/50 backdrop-blur-sm border-b border-white/5">
-        <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-          <img src="/logo.jpeg" alt="SongMartyn" className="w-10 h-10 rounded-lg object-cover" />
-          <div>
-            <h1 className="text-xl font-bold text-white">
-              Song<span className="text-yellow-neon">Martyn</span> Admin
-            </h1>
-            {isLocal && (
-              <span className="text-xs text-green-400">Local Access</span>
-            )}
-          </div>
-        </Link>
+      <header className="px-6 py-4 bg-matte-gray/50 backdrop-blur-sm border-b border-white/5">
+        <div className="flex items-center justify-between">
+          <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+            <img src="/logo.jpeg" alt="SongMartyn" className="w-10 h-10 rounded-lg object-cover" />
+            <div>
+              <h1 className="text-xl font-bold text-white">
+                Song<span className="text-yellow-neon">Martyn</span> Admin
+              </h1>
+              {isLocal && (
+                <span className="text-xs text-green-400">Local Access</span>
+              )}
+            </div>
+          </Link>
 
-        <button
-          onClick={logout}
-          className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
-        >
-          Logout
-        </button>
+          {/* Playback Controls */}
+          <div className="flex items-center gap-3">
+            {/* Countdown indicator - replaces "Next Up" when active */}
+            {countdown.active ? (
+              <div className={`flex items-center gap-2 px-3 py-2 rounded-xl ${
+                countdown.requires_approval
+                  ? 'bg-orange-500/20 border border-orange-500/30'
+                  : 'bg-cyan-500/20 border border-cyan-500/30'
+              }`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                  countdown.requires_approval ? 'bg-orange-500/30 text-orange-400' : 'bg-cyan-500/30 text-cyan-400'
+                }`}>
+                  {countdown.seconds_remaining}
+                </div>
+                <div className="hidden sm:block">
+                  <div className={`text-sm font-medium ${countdown.requires_approval ? 'text-orange-400' : 'text-cyan-400'}`}>
+                    {nextSong?.title || 'Next Song'}
+                  </div>
+                  <div className="text-xs text-gray-400">
+                    {nextSong ? getSingerName(nextSong.added_by) : ''}
+                  </div>
+                </div>
+                <button
+                  onClick={handleStartNow}
+                  className={`px-3 py-1.5 text-sm font-bold rounded-lg transition-colors ${
+                    countdown.requires_approval
+                      ? 'bg-orange-500 text-white hover:bg-orange-600'
+                      : 'bg-cyan-500 text-white hover:bg-cyan-600'
+                  }`}
+                >
+                  Start Now
+                </button>
+              </div>
+            ) : nextSong && idle && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/5 border border-white/10">
+                <div className="text-yellow-neon text-xs font-semibold uppercase tracking-wide">Next</div>
+                <div className="hidden sm:block">
+                  <div className="text-sm font-medium text-white truncate max-w-[200px]">{nextSong.title}</div>
+                  <div className="text-xs text-gray-400">{getSingerName(nextSong.added_by)}</div>
+                </div>
+              </div>
+            )}
+
+            {/* BGM Toggle Button - only show when idle and BGM is configured */}
+            {canToggleBGM && bgmEnabled && (
+              <button
+                onClick={handleToggleBGM}
+                className={`flex items-center gap-2 px-3 py-2 font-bold rounded-xl transition-all hover:scale-105 active:scale-95 ${
+                  bgmActive
+                    ? 'bg-gradient-to-r from-purple-500 to-purple-400 text-white shadow-lg shadow-purple-500/30'
+                    : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                }`}
+                title={bgmActive ? 'Stop Background Music' : 'Play Background Music'}
+              >
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
+                </svg>
+                {bgmActive ? 'BGM On' : 'BGM'}
+              </button>
+            )}
+
+            {/* Play/Stop Button */}
+            {isPlaying ? (
+              <button
+                onClick={handleStop}
+                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-yellow-500 to-amber-400 text-gray-900 font-bold rounded-xl hover:from-yellow-400 hover:to-amber-300 transition-all shadow-lg shadow-yellow-500/30 hover:shadow-yellow-400/40 hover:scale-105 active:scale-95"
+              >
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M6 6h12v12H6z" />
+                </svg>
+                Stop
+              </button>
+            ) : (
+              <button
+                onClick={handlePlay}
+                disabled={queueSongs.length === 0}
+                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-cyan-400 text-gray-900 font-bold rounded-xl hover:from-cyan-400 hover:to-cyan-300 transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-cyan-500/30 hover:shadow-cyan-400/40 hover:scale-105 active:scale-95"
+              >
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                Play
+              </button>
+            )}
+
+            <button
+              onClick={logout}
+              className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+            >
+              Logout
+            </button>
+          </div>
+        </div>
       </header>
 
       {/* Tab Navigation */}
