@@ -374,6 +374,109 @@ func (c *Config) IncrementPart(part string, delta int) {
 // colorPlaceholderRegex matches color placeholders like #01; or #001;
 var colorPlaceholderRegex = regexp.MustCompile(`#0*(\d+);`)
 
+// Regex patterns for SVG normalization
+var (
+	// Match style attribute: style="..."
+	styleAttrRegex = regexp.MustCompile(`\s+style="([^"]*)"`)
+	// Match individual CSS properties within style
+	cssPropRegex = regexp.MustCompile(`([a-z-]+)\s*:\s*([^;]+);?`)
+	// Match px units that need to be stripped for attributes
+	pxUnitRegex = regexp.MustCompile(`^([\d.]+)px$`)
+)
+
+// NormalizeSVG converts inline style attributes to element attributes
+// This improves compatibility with oksvg which handles attributes better than CSS styles
+func NormalizeSVG(svg string) string {
+	// Find all style attributes and convert them
+	return styleAttrRegex.ReplaceAllStringFunc(svg, func(match string) string {
+		// Extract the style content
+		styleMatch := styleAttrRegex.FindStringSubmatch(match)
+		if len(styleMatch) < 2 {
+			return match
+		}
+		styleContent := styleMatch[1]
+
+		// Parse CSS properties
+		var attrs []string
+		props := cssPropRegex.FindAllStringSubmatch(styleContent, -1)
+
+		for _, prop := range props {
+			if len(prop) < 3 {
+				continue
+			}
+			name := strings.TrimSpace(prop[1])
+			value := strings.TrimSpace(prop[2])
+
+			// Convert CSS property to SVG attribute
+			attrName, attrValue := cssToSVGAttribute(name, value)
+			if attrName != "" {
+				attrs = append(attrs, fmt.Sprintf(`%s="%s"`, attrName, attrValue))
+			}
+		}
+
+		if len(attrs) == 0 {
+			return ""
+		}
+		return " " + strings.Join(attrs, " ")
+	})
+}
+
+// cssToSVGAttribute converts a CSS property name/value to SVG attribute name/value
+func cssToSVGAttribute(name, value string) (string, string) {
+	// Strip px units for numeric attributes
+	if pxMatch := pxUnitRegex.FindStringSubmatch(value); len(pxMatch) > 1 {
+		value = pxMatch[1]
+	}
+
+	// Map CSS properties to SVG attributes
+	switch name {
+	case "fill":
+		return "fill", value
+	case "stroke":
+		return "stroke", value
+	case "stroke-width":
+		return "stroke-width", value
+	case "stroke-linecap":
+		return "stroke-linecap", value
+	case "stroke-linejoin":
+		return "stroke-linejoin", value
+	case "stroke-miterlimit":
+		return "stroke-miterlimit", value
+	case "stroke-dasharray":
+		return "stroke-dasharray", value
+	case "stroke-dashoffset":
+		return "stroke-dashoffset", value
+	case "stroke-opacity":
+		return "stroke-opacity", value
+	case "fill-opacity":
+		return "fill-opacity", value
+	case "opacity":
+		return "opacity", value
+	case "fill-rule":
+		return "fill-rule", value
+	case "clip-rule":
+		return "clip-rule", value
+	case "font-family":
+		return "font-family", value
+	case "font-size":
+		return "font-size", value
+	case "font-weight":
+		return "font-weight", value
+	case "text-anchor":
+		return "text-anchor", value
+	case "dominant-baseline":
+		return "dominant-baseline", value
+	case "display":
+		// Skip display:none elements entirely would need different handling
+		return "display", value
+	case "visibility":
+		return "visibility", value
+	default:
+		// Unknown property - skip it
+		return "", ""
+	}
+}
+
 // Preview returns a simplified preview of the avatar (just the design indices)
 func (c Config) Preview() map[string]string {
 	result := make(map[string]string)
@@ -401,6 +504,10 @@ func (c Config) Preview() map[string]string {
 // ToImage generates a rasterized image of the avatar at the specified size
 func (c Config) ToImage(size int, includeEnv bool) (image.Image, error) {
 	svg := c.ToSVGWithEnv(includeEnv)
+
+	// Normalize SVG: convert inline style attributes to element attributes
+	// This improves oksvg compatibility, especially for stroke properties
+	svg = NormalizeSVG(svg)
 
 	// Parse SVG
 	icon, err := oksvg.ReadIconStream(bytes.NewReader([]byte(svg)))

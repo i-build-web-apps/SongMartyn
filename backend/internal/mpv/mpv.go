@@ -683,9 +683,10 @@ func (c *Controller) LoadCDG(cdgPath, audioPath string) error {
 
 	// Load CDG as video with external audio file
 	// Note: audio-files (plural) is the correct mpv option name
+	// Quote the audio path to handle spaces in filenames
 	_, err := c.conn.Call("loadfile", cdgPath,
 		"replace",
-		fmt.Sprintf("audio-files=%s", audioPath),
+		fmt.Sprintf("audio-files=\"%s\"", audioPath),
 	)
 	c.mu.Unlock()
 

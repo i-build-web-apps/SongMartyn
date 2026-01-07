@@ -1676,6 +1676,7 @@ func (app *App) playCurrentSong() {
 		log.Printf("Using CDG+Audio: cdg=%s, audio=%s", song.CDGPath, song.AudioPath)
 		if err := app.mpv.LoadCDG(song.CDGPath, song.AudioPath); err != nil {
 			log.Printf("Failed to load CDG '%s': %v", song.CDGPath, err)
+			app.handleSongLoadError(song)
 		} else {
 			app.showSingerOverlay(singerName, song.Title)
 		}
@@ -1688,6 +1689,7 @@ func (app *App) playCurrentSong() {
 		log.Printf("Using vocal mix: instr=%s, vocal=%s, gain=%.2f", song.InstrPath, song.VocalPath, gain)
 		if err := app.mpv.SetVocalMix(song.InstrPath, song.VocalPath, gain); err != nil {
 			log.Printf("Failed to set vocal mix: %v", err)
+			app.handleSongLoadError(song)
 		} else {
 			app.showSingerOverlay(singerName, song.Title)
 		}
@@ -1698,9 +1700,34 @@ func (app *App) playCurrentSong() {
 	app.mpv.SetPlayingSong(true) // Mark as song playback for end detection
 	if err := app.mpv.LoadFile(song.VideoURL); err != nil {
 		log.Printf("Failed to load file '%s': %v", song.VideoURL, err)
+		app.handleSongLoadError(song)
 	} else {
 		app.mpv.StartPlaybackMonitor() // Start monitoring for song end
 		app.showSingerOverlay(singerName, song.Title)
+	}
+}
+
+// handleSongLoadError handles recovery when a song fails to load
+// It advances to the next song or shows the holding screen if queue is empty
+func (app *App) handleSongLoadError(failedSong *models.Song) {
+	log.Printf("Skipping failed song: '%s' by '%s'", failedSong.Title, failedSong.Artist)
+
+	// Advance to next song in queue (Skip advances position)
+	next := app.queue.Skip()
+	app.broadcastState()
+
+	// Check if there's another song to play
+	if next != nil {
+		log.Printf("Attempting to play next song: '%s' by '%s'", next.Title, next.Artist)
+		// Use a short delay to avoid rapid-fire retries if multiple songs fail
+		time.AfterFunc(500*time.Millisecond, func() {
+			app.playCurrentSong()
+			app.broadcastState()
+		})
+	} else {
+		log.Printf("No more songs in queue, showing holding screen")
+		app.idle = true
+		app.showHoldingScreen()
 	}
 }
 
@@ -1836,6 +1863,8 @@ func (app *App) Run() {
 
 	// Avatar API endpoints
 	mux.HandleFunc("/api/avatar", handleAvatar)
+	mux.HandleFunc("/api/avatar/png", handleAvatarPNG)
+	mux.HandleFunc("/api/avatar/debug", handleAvatarDebug)
 	mux.HandleFunc("/api/avatar/random", handleAvatarRandom)
 
 	// Static files (frontend build) with SPA fallback
