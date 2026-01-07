@@ -771,6 +771,8 @@ func (app *App) setupHandlers() {
 				songID[:min(8, len(songID))],
 				client.GetSession().DisplayName,
 				martynKey[:min(8, len(martynKey))])
+			// Update holding screen if idle (shows next up info)
+			app.updateHoldingScreenIfIdle()
 			app.broadcastState()
 		},
 

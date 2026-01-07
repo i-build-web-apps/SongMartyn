@@ -14,32 +14,32 @@ func TestNormalizeSVG(t *testing.T) {
 		{
 			name:     "simple fill",
 			input:    `<path d="M0 0" style="fill:#ff0000;"/>`,
-			expected: `<path d="M0 0" fill="#ff0000"/>`,
+			expected: `<path d="M0,0" fill="#ff0000"/>`,
 		},
 		{
 			name:     "fill and stroke",
 			input:    `<path d="M0 0" style="fill:#ff0000;stroke:#000;"/>`,
-			expected: `<path d="M0 0" fill="#ff0000" stroke="#000"/>`,
+			expected: `<path d="M0,0" fill="#ff0000" stroke="#000"/>`,
 		},
 		{
 			name:     "stroke with width in px",
 			input:    `<path d="M0 0" style="stroke:#333;stroke-width:6.1999px;"/>`,
-			expected: `<path d="M0 0" stroke="#333" stroke-width="6.1999"/>`,
+			expected: `<path d="M0,0" stroke="#333" stroke-width="6.1999"/>`,
 		},
 		{
 			name:     "complex stroke properties",
 			input:    `<path d="M0 0" style="fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-width:5.9998px;stroke:#b8b8b8;"/>`,
-			expected: `<path d="M0 0" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="5.9998" stroke="#b8b8b8"/>`,
+			expected: `<path d="M0,0" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="5.9998" stroke="#b8b8b8"/>`,
 		},
 		{
 			name:     "no style attribute",
 			input:    `<path d="M0 0" fill="#ff0000"/>`,
-			expected: `<path d="M0 0" fill="#ff0000"/>`,
+			expected: `<path d="M0,0" fill="#ff0000"/>`,
 		},
 		{
 			name:     "empty style",
 			input:    `<path d="M0 0" style=""/>`,
-			expected: `<path d="M0 0"/>`,
+			expected: `<path d="M0,0"/>`,
 		},
 	}
 

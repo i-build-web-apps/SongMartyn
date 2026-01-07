@@ -382,12 +382,495 @@ var (
 	cssPropRegex = regexp.MustCompile(`([a-z-]+)\s*:\s*([^;]+);?`)
 	// Match px units that need to be stripped for attributes
 	pxUnitRegex = regexp.MustCompile(`^([\d.]+)px$`)
+	// Match path d attribute
+	pathDAttrRegex = regexp.MustCompile(`(<path[^>]*\sd=")([^"]+)("[^>]*>)`)
 )
 
+// normalizePathCommands converts relative path commands to absolute for oksvg compatibility
+// oksvg has issues with relative arc commands ('a'), so we convert them to absolute ('A')
+func normalizePathCommands(svg string) string {
+	return pathDAttrRegex.ReplaceAllStringFunc(svg, func(match string) string {
+		parts := pathDAttrRegex.FindStringSubmatch(match)
+		if len(parts) < 4 {
+			return match
+		}
+		prefix := parts[1]  // <path ... d="
+		pathData := parts[2] // the path data
+		suffix := parts[3]   // " ...>
+
+		// Convert relative commands to absolute
+		normalizedPath := convertRelativeToAbsolute(pathData)
+		return prefix + normalizedPath + suffix
+	})
+}
+
+// convertRelativeToAbsolute converts relative SVG path commands to absolute
+// This specifically fixes the 'a' (relative arc) command which oksvg handles incorrectly
+func convertRelativeToAbsolute(pathData string) string {
+	var result strings.Builder
+	var curX, curY float64
+	var startX, startY float64 // For Z command
+
+	i := 0
+	n := len(pathData)
+
+	for i < n {
+		// Skip whitespace
+		for i < n && (pathData[i] == ' ' || pathData[i] == '\t' || pathData[i] == '\n' || pathData[i] == '\r' || pathData[i] == ',') {
+			result.WriteByte(pathData[i])
+			i++
+		}
+		if i >= n {
+			break
+		}
+
+		cmd := pathData[i]
+		i++
+
+		switch cmd {
+		case 'M': // Absolute moveto
+			result.WriteByte('M')
+			// Parse coordinate pairs
+			for {
+				x, y, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curX, curY = x, y
+				startX, startY = x, y
+				result.WriteString(formatFloat(x) + "," + formatFloat(y))
+				// Check for more coordinates (implicit lineto)
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'm': // Relative moveto - convert to absolute
+			result.WriteByte('M')
+			first := true
+			for {
+				dx, dy, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				if first {
+					curX += dx
+					curY += dy
+					first = false
+				} else {
+					curX += dx
+					curY += dy
+				}
+				startX, startY = curX, curY
+				result.WriteString(formatFloat(curX) + "," + formatFloat(curY))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'L': // Absolute lineto
+			result.WriteByte('L')
+			for {
+				x, y, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curX, curY = x, y
+				result.WriteString(formatFloat(x) + "," + formatFloat(y))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'l': // Relative lineto - convert to absolute
+			result.WriteByte('L')
+			for {
+				dx, dy, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curX += dx
+				curY += dy
+				result.WriteString(formatFloat(curX) + "," + formatFloat(curY))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'H': // Absolute horizontal lineto
+			result.WriteByte('H')
+			for {
+				x, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curX = x
+				result.WriteString(formatFloat(x))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'h': // Relative horizontal lineto - convert to absolute
+			result.WriteByte('H')
+			for {
+				dx, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curX += dx
+				result.WriteString(formatFloat(curX))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'V': // Absolute vertical lineto
+			result.WriteByte('V')
+			for {
+				y, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curY = y
+				result.WriteString(formatFloat(y))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'v': // Relative vertical lineto - convert to absolute
+			result.WriteByte('V')
+			for {
+				dy, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curY += dy
+				result.WriteString(formatFloat(curY))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'A': // Absolute arc - pass through
+			result.WriteByte('A')
+			for {
+				// rx ry x-axis-rotation large-arc-flag sweep-flag x y
+				rx, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				ry, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				rotation, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				largeArc, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				sweep, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				x, y, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curX, curY = x, y
+				result.WriteString(formatFloat(rx) + "," + formatFloat(ry) + " " + formatFloat(rotation) + " " + formatFloat(largeArc) + " " + formatFloat(sweep) + " " + formatFloat(x) + "," + formatFloat(y))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'a': // Relative arc - convert to absolute (THIS IS THE KEY FIX)
+			result.WriteByte('A')
+			for {
+				// rx ry x-axis-rotation large-arc-flag sweep-flag dx dy
+				rx, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				ry, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				rotation, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				largeArc, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				sweep, newI, ok := parseNumber(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				dx, dy, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curX += dx
+				curY += dy
+				result.WriteString(formatFloat(rx) + "," + formatFloat(ry) + " " + formatFloat(rotation) + " " + formatFloat(largeArc) + " " + formatFloat(sweep) + " " + formatFloat(curX) + "," + formatFloat(curY))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'Q': // Absolute quadratic bezier
+			result.WriteByte('Q')
+			for {
+				x1, y1, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				x, y, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curX, curY = x, y
+				result.WriteString(formatFloat(x1) + "," + formatFloat(y1) + " " + formatFloat(x) + "," + formatFloat(y))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'q': // Relative quadratic bezier - convert to absolute
+			result.WriteByte('Q')
+			for {
+				dx1, dy1, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				dx, dy, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				x1, y1 := curX+dx1, curY+dy1
+				curX += dx
+				curY += dy
+				result.WriteString(formatFloat(x1) + "," + formatFloat(y1) + " " + formatFloat(curX) + "," + formatFloat(curY))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'C': // Absolute cubic bezier
+			result.WriteByte('C')
+			for {
+				x1, y1, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				x2, y2, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				x, y, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				curX, curY = x, y
+				result.WriteString(formatFloat(x1) + "," + formatFloat(y1) + " " + formatFloat(x2) + "," + formatFloat(y2) + " " + formatFloat(x) + "," + formatFloat(y))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'c': // Relative cubic bezier - convert to absolute
+			result.WriteByte('C')
+			for {
+				dx1, dy1, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				dx2, dy2, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				dx, dy, newI, ok := parseCoordPair(pathData, i)
+				if !ok {
+					break
+				}
+				i = newI
+				x1, y1 := curX+dx1, curY+dy1
+				x2, y2 := curX+dx2, curY+dy2
+				curX += dx
+				curY += dy
+				result.WriteString(formatFloat(x1) + "," + formatFloat(y1) + " " + formatFloat(x2) + "," + formatFloat(y2) + " " + formatFloat(curX) + "," + formatFloat(curY))
+				if !hasMoreNumbers(pathData, i) {
+					break
+				}
+				result.WriteByte(' ')
+			}
+
+		case 'Z', 'z': // Close path
+			result.WriteByte('Z')
+			curX, curY = startX, startY
+
+		default:
+			// Unknown command, pass through
+			result.WriteByte(cmd)
+		}
+	}
+
+	return result.String()
+}
+
+// formatFloat formats a float with reasonable precision to avoid floating point artifacts
+func formatFloat(f float64) string {
+	// Round to 4 decimal places to avoid floating point precision issues
+	// that can cause arc commands to not close properly
+	rounded := float64(int(f*10000+0.5)) / 10000
+	return fmt.Sprintf("%g", rounded)
+}
+
+// parseNumber parses a number from path data starting at index i
+func parseNumber(pathData string, i int) (float64, int, bool) {
+	n := len(pathData)
+
+	// Skip whitespace and commas
+	for i < n && (pathData[i] == ' ' || pathData[i] == '\t' || pathData[i] == '\n' || pathData[i] == '\r' || pathData[i] == ',') {
+		i++
+	}
+	if i >= n {
+		return 0, i, false
+	}
+
+	// Check if this is a number (digit, minus, or decimal point)
+	if !isNumberStart(pathData[i]) {
+		return 0, i, false
+	}
+
+	start := i
+
+	// Handle sign
+	if i < n && (pathData[i] == '-' || pathData[i] == '+') {
+		i++
+	}
+
+	// Parse digits before decimal
+	for i < n && pathData[i] >= '0' && pathData[i] <= '9' {
+		i++
+	}
+
+	// Parse decimal point and digits after
+	if i < n && pathData[i] == '.' {
+		i++
+		for i < n && pathData[i] >= '0' && pathData[i] <= '9' {
+			i++
+		}
+	}
+
+	// Parse exponent
+	if i < n && (pathData[i] == 'e' || pathData[i] == 'E') {
+		i++
+		if i < n && (pathData[i] == '-' || pathData[i] == '+') {
+			i++
+		}
+		for i < n && pathData[i] >= '0' && pathData[i] <= '9' {
+			i++
+		}
+	}
+
+	if i == start {
+		return 0, i, false
+	}
+
+	numStr := pathData[start:i]
+	var val float64
+	fmt.Sscanf(numStr, "%f", &val)
+	return val, i, true
+}
+
+// parseCoordPair parses two numbers (x,y coordinate pair) from path data
+func parseCoordPair(pathData string, i int) (float64, float64, int, bool) {
+	x, i, ok := parseNumber(pathData, i)
+	if !ok {
+		return 0, 0, i, false
+	}
+	y, i, ok := parseNumber(pathData, i)
+	if !ok {
+		return 0, 0, i, false
+	}
+	return x, y, i, true
+}
+
+// isNumberStart checks if a character can start a number
+func isNumberStart(c byte) bool {
+	return (c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.'
+}
+
+// hasMoreNumbers checks if there are more numbers following
+func hasMoreNumbers(pathData string, i int) bool {
+	n := len(pathData)
+	// Skip whitespace and commas
+	for i < n && (pathData[i] == ' ' || pathData[i] == '\t' || pathData[i] == '\n' || pathData[i] == '\r' || pathData[i] == ',') {
+		i++
+	}
+	if i >= n {
+		return false
+	}
+	return isNumberStart(pathData[i])
+}
+
 // NormalizeSVG converts inline style attributes to element attributes
+// and fixes path commands for oksvg compatibility
 // This improves compatibility with oksvg which handles attributes better than CSS styles
 func NormalizeSVG(svg string) string {
-	// Find all style attributes and convert them
+	// First, normalize path commands (convert relative arcs to absolute)
+	svg = normalizePathCommands(svg)
+
+	// Then convert style attributes to element attributes
 	return styleAttrRegex.ReplaceAllStringFunc(svg, func(match string) string {
 		// Extract the style content
 		styleMatch := styleAttrRegex.FindStringSubmatch(match)
