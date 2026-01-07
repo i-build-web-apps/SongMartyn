@@ -612,8 +612,13 @@ func (app *App) setupHandlers() {
 					log.Println("Current song removed - starting countdown for next song")
 					app.startCountdown(currentSingerKey)
 				} else {
-					log.Println("Current song removed - queue empty, showing holding screen")
-					app.showHoldingScreen()
+					log.Println("Current song removed - queue empty")
+					// Start BGM if enabled, otherwise show holding screen
+					if app.bgmSettings.Enabled && app.bgmSettings.URL != "" {
+						app.startBGM()
+					} else {
+						app.showHoldingScreen()
+					}
 				}
 			}
 

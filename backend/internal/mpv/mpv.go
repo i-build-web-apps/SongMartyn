@@ -681,16 +681,34 @@ func (c *Controller) LoadCDG(cdgPath, audioPath string) error {
 	// Reset loop settings from image display
 	c.conn.Set("loop-file", "no")
 
-	// Set audio-file property before loading - this handles spaces in paths
-	c.conn.Set("audio-files", audioPath)
+	// Clear any previous audio-files setting
+	c.conn.Set("audio-files", "")
 
-	// Load CDG file - it will use the audio-files property
+	// Load CDG file first
 	_, err := c.conn.Call("loadfile", cdgPath, "replace")
-	c.mu.Unlock()
-
 	if err != nil {
+		c.mu.Unlock()
 		return fmt.Errorf("failed to load CDG: %w", err)
 	}
+	c.mu.Unlock()
+
+	// Wait for CDG to start loading before adding audio
+	time.Sleep(300 * time.Millisecond)
+
+	// Add audio track using audio-add command
+	// This is more reliable than audio-files option for paths with spaces
+	c.mu.Lock()
+	if c.conn != nil {
+		_, err = c.conn.Call("audio-add", audioPath, "select")
+		if err != nil {
+			log.Printf("[MPV] audio-add failed: %v, trying loadfile with audio-files", err)
+			// Fallback: try loadfile with escaped audio-files option
+			escapedPath := strings.ReplaceAll(audioPath, "\\", "\\\\")
+			escapedPath = strings.ReplaceAll(escapedPath, " ", "\\ ")
+			c.conn.Call("loadfile", cdgPath, "replace", "audio-files="+escapedPath)
+		}
+	}
+	c.mu.Unlock()
 
 	// Start playback monitor to detect song end
 	c.StartPlaybackMonitor()
