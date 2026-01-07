@@ -444,7 +444,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" L") // oksvg: explicit command for implicit lineto
 			}
 
 		case 'm': // Relative moveto - convert to absolute
@@ -469,7 +469,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" L") // oksvg: explicit command for implicit lineto
 			}
 
 		case 'L': // Absolute lineto
@@ -485,7 +485,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" L") // oksvg: explicit command
 			}
 
 		case 'l': // Relative lineto - convert to absolute
@@ -502,7 +502,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" L") // oksvg: explicit command
 			}
 
 		case 'H': // Absolute horizontal lineto
@@ -518,7 +518,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" H") // oksvg: explicit command
 			}
 
 		case 'h': // Relative horizontal lineto - convert to absolute
@@ -534,7 +534,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" H") // oksvg: explicit command
 			}
 
 		case 'V': // Absolute vertical lineto
@@ -550,7 +550,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" V") // oksvg: explicit command
 			}
 
 		case 'v': // Relative vertical lineto - convert to absolute
@@ -566,7 +566,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" V") // oksvg: explicit command
 			}
 
 		case 'A': // Absolute arc - pass through
@@ -608,7 +608,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" A") // oksvg requires explicit command for each segment
 			}
 
 		case 'a': // Relative arc - convert to absolute (THIS IS THE KEY FIX)
@@ -651,7 +651,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" A") // oksvg requires explicit command for each segment
 			}
 
 		case 'Q': // Absolute quadratic bezier
@@ -672,7 +672,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" Q") // oksvg: explicit command
 			}
 
 		case 'q': // Relative quadratic bezier - convert to absolute
@@ -695,7 +695,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" Q") // oksvg: explicit command
 			}
 
 		case 'C': // Absolute cubic bezier
@@ -721,7 +721,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" C") // oksvg: explicit command
 			}
 
 		case 'c': // Relative cubic bezier - convert to absolute
@@ -750,7 +750,7 @@ func convertRelativeToAbsolute(pathData string) string {
 				if !hasMoreNumbers(pathData, i) {
 					break
 				}
-				result.WriteByte(' ')
+				result.WriteString(" C") // oksvg: explicit command
 			}
 
 		case 'Z', 'z': // Close path
