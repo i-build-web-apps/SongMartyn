@@ -91,29 +91,29 @@ SongMartyn transforms any computer with a TV into a professional karaoke setup. 
 <table>
   <tr>
     <td align="center">
-      <img src="docs/screenshots/songmartyn-home.png" width="280" alt="Guest Home Screen"><br>
+      <img src="docs/screenshots/guest-home.png" width="280" alt="Guest Home Screen"><br>
       <em>Guest Home Screen</em>
     </td>
     <td align="center">
-      <img src="docs/screenshots/admin-queue-working.png" width="280" alt="Admin Queue"><br>
+      <img src="docs/screenshots/admin-queue.png" width="280" alt="Admin Queue"><br>
       <em>Admin Queue Management</em>
     </td>
     <td align="center">
-      <img src="docs/screenshots/admin-library-working.png" width="280" alt="Library Management"><br>
+      <img src="docs/screenshots/admin-library.png" width="280" alt="Library Management"><br>
       <em>Library Management</em>
     </td>
   </tr>
   <tr>
     <td align="center">
-      <img src="docs/screenshots/qr-code-modal.png" width="280" alt="QR Code"><br>
+      <img src="docs/screenshots/qr-code.png" width="280" alt="QR Code"><br>
       <em>QR Code Join</em>
     </td>
     <td align="center">
-      <img src="docs/screenshots/user-settings-modal.png" width="280" alt="User Settings"><br>
+      <img src="docs/screenshots/user-settings.png" width="280" alt="User Settings"><br>
       <em>User Settings & Avatar</em>
     </td>
     <td align="center">
-      <img src="docs/screenshots/songmartyn-now-playing.png" width="280" alt="Now Playing"><br>
+      <img src="docs/screenshots/now-playing.png" width="280" alt="Now Playing"><br>
       <em>Now Playing View</em>
     </td>
   </tr>
