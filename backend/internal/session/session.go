@@ -54,6 +54,7 @@ func NewManager(dbPath string) (*Manager, error) {
 	db.Exec(`ALTER TABLE sessions ADD COLUMN is_admin INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN avatar_config TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN name_locked INTEGER DEFAULT 0`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN favorites TEXT DEFAULT '[]'`)
 
 	// Create blocked_users table
 	_, err = db.Exec(`
@@ -88,7 +89,8 @@ func (m *Manager) loadSessions() error {
 		       current_song_id, connected_at, last_seen_at,
 		       COALESCE(ip_address, ''), COALESCE(device_name, ''),
 		       COALESCE(user_agent, ''), COALESCE(is_admin, 0),
-		       COALESCE(avatar_config, ''), COALESCE(name_locked, 0)
+		       COALESCE(avatar_config, ''), COALESCE(name_locked, 0),
+		       COALESCE(favorites, '[]')
 		FROM sessions
 	`)
 	if err != nil {
@@ -103,6 +105,7 @@ func (m *Manager) loadSessions() error {
 		var connectedAt, lastSeenAt string
 		var isAdmin, nameLocked int
 		var avatarConfigJSON string
+		var favoritesJSON string
 
 		err := rows.Scan(
 			&session.MartynKey,
@@ -118,12 +121,14 @@ func (m *Manager) loadSessions() error {
 			&isAdmin,
 			&avatarConfigJSON,
 			&nameLocked,
+			&favoritesJSON,
 		)
 		if err != nil {
 			continue
 		}
 
 		json.Unmarshal([]byte(searchHistoryJSON), &session.SearchHistory)
+		json.Unmarshal([]byte(favoritesJSON), &session.Favorites)
 		if currentSongID.Valid {
 			session.CurrentSongID = currentSongID.String
 		}
@@ -302,6 +307,7 @@ func (m *Manager) GetActiveSessions() []models.Session {
 // saveSession persists a session to SQLite
 func (m *Manager) saveSession(session *models.Session) error {
 	searchHistoryJSON, _ := json.Marshal(session.SearchHistory)
+	favoritesJSON, _ := json.Marshal(session.Favorites)
 
 	isAdmin := 0
 	if session.IsAdmin {
@@ -325,8 +331,8 @@ func (m *Manager) saveSession(session *models.Session) error {
 		INSERT OR REPLACE INTO sessions
 		(martyn_key, display_name, vocal_assist, search_history,
 		 current_song_id, connected_at, last_seen_at,
-		 ip_address, device_name, user_agent, is_admin, avatar_config, name_locked)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ip_address, device_name, user_agent, is_admin, avatar_config, name_locked, favorites)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		session.MartynKey,
 		session.DisplayName,
@@ -341,6 +347,7 @@ func (m *Manager) saveSession(session *models.Session) error {
 		isAdmin,
 		avatarConfigJSON,
 		nameLocked,
+		string(favoritesJSON),
 	)
 	return err
 }
@@ -633,4 +640,61 @@ func (m *Manager) GetBlockedUserCount() int {
 	var count int
 	m.db.QueryRow(`SELECT COUNT(*) FROM blocked_users`).Scan(&count)
 	return count
+}
+
+// AddFavorite adds a song ID to a user's favorites list
+func (m *Manager) AddFavorite(martynKey, songID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[martynKey]
+	if !ok {
+		return nil
+	}
+
+	// Check if already in favorites
+	for _, id := range session.Favorites {
+		if id == songID {
+			return nil // Already favorited
+		}
+	}
+
+	session.Favorites = append(session.Favorites, songID)
+	session.LastSeenAt = time.Now()
+	return m.saveSession(session)
+}
+
+// RemoveFavorite removes a song ID from a user's favorites list
+func (m *Manager) RemoveFavorite(martynKey, songID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[martynKey]
+	if !ok {
+		return nil
+	}
+
+	// Find and remove the song ID
+	for i, id := range session.Favorites {
+		if id == songID {
+			session.Favorites = append(session.Favorites[:i], session.Favorites[i+1:]...)
+			session.LastSeenAt = time.Now()
+			return m.saveSession(session)
+		}
+	}
+
+	return nil // Not in favorites
+}
+
+// GetFavorites returns a user's favorites list
+func (m *Manager) GetFavorites(martynKey string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	session, ok := m.sessions[martynKey]
+	if !ok {
+		return nil
+	}
+
+	return session.Favorites
 }

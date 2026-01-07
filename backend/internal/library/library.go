@@ -443,6 +443,57 @@ func (m *Manager) GetSong(id string) (*models.LibrarySong, error) {
 	return &song, nil
 }
 
+// GetSongsByIDs returns multiple songs by their IDs
+func (m *Manager) GetSongsByIDs(ids []string) ([]models.LibrarySong, error) {
+	if len(ids) == 0 {
+		return []models.LibrarySong{}, nil
+	}
+
+	// Build placeholder string for IN clause
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, title, artist, album, duration, file_path, thumbnail_url,
+		       vocal_path, instr_path, cdg_path, audio_path, library_id, times_sung, last_sung_at, last_sung_by, added_at
+		FROM library_songs WHERE id IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	rows, err := m.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var songs []models.LibrarySong
+	for rows.Next() {
+		var song models.LibrarySong
+		var lastSungAt sql.NullTime
+		var lastSungBy sql.NullString
+		err := rows.Scan(
+			&song.ID, &song.Title, &song.Artist, &song.Album, &song.Duration,
+			&song.FilePath, &song.ThumbnailURL, &song.VocalPath, &song.InstrPath,
+			&song.CDGPath, &song.AudioPath, &song.LibraryID, &song.TimesSung, &lastSungAt, &lastSungBy, &song.AddedAt,
+		)
+		if err != nil {
+			continue
+		}
+		if lastSungAt.Valid {
+			song.LastSungAt = &lastSungAt.Time
+		}
+		if lastSungBy.Valid {
+			song.LastSungBy = lastSungBy.String
+		}
+		songs = append(songs, song)
+	}
+
+	return songs, nil
+}
+
 // RecordSongPlayed records that a user sang a song
 func (m *Manager) RecordSongPlayed(songID, martynKey string) error {
 	// Get song details for history

@@ -154,8 +154,12 @@ class WebSocketService {
 
   // Send a message to the server
   private send<T>(type: MessageType, payload: T): void {
+    console.log(`[WS SEND] type=${type}, readyState=${this.ws?.readyState}, payload=`, payload);
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type, payload }));
+      console.log(`[WS SEND] Message sent successfully: ${type}`);
+    } else {
+      console.error(`[WS SEND] FAILED - WebSocket not open! readyState=${this.ws?.readyState}`);
     }
   }
 
@@ -227,6 +231,22 @@ class WebSocketService {
     this.send('volume', volume);
   }
 
+  setKeyChange(semitones: number): void {
+    this.send('key_change', semitones);
+  }
+
+  setTempoChange(speed: number): void {
+    this.send('tempo_change', speed);
+  }
+
+  addFavorite(songID: string): void {
+    this.send('add_favorite', songID);
+  }
+
+  removeFavorite(songID: string): void {
+    this.send('remove_favorite', songID);
+  }
+
   setAutoplay(enabled: boolean): void {
     this.send('autoplay', enabled);
   }
@@ -271,6 +291,10 @@ class WebSocketService {
     this.send('admin_play_next', null);
   }
 
+  adminStartNow(): void {
+    this.send('admin_start_now', null);
+  }
+
   adminStop(): void {
     this.send('admin_stop', null);
   }
@@ -281,6 +305,14 @@ class WebSocketService {
 
   adminSetNameLock(martynKey: string, locked: boolean): void {
     this.send('admin_set_name_lock', { martyn_key: martynKey, locked });
+  }
+
+  adminToggleBGM(): void {
+    this.send('admin_toggle_bgm', null);
+  }
+
+  adminSetMessage(message: string): void {
+    this.send('admin_set_message', message);
   }
 
   // Disconnect

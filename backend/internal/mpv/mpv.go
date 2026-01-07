@@ -17,6 +17,13 @@ import (
 	"songmartyn/pkg/models"
 )
 
+// DisplaySettings configures which display to use for the player
+type DisplaySettings struct {
+	TargetDisplay  string // Name of display to use (empty = auto/primary)
+	ScreenIndex    int    // Screen index for mpv (0-based, -1 = auto)
+	AutoFullscreen bool   // Automatically fullscreen on startup
+}
+
 // Controller manages the mpv media player instance
 type Controller struct {
 	conn       *mpvipc.Connection
@@ -26,6 +33,16 @@ type Controller struct {
 	executable string
 	mu         sync.RWMutex
 	adopted    bool // true if we adopted an existing MPV instance
+
+	// Display settings
+	displaySettings DisplaySettings
+
+	// Track content type for end-file handling
+	playingSong       bool    // true when playing a song (vs holding screen/image)
+	currentPlaylistID int64   // playlist_entry_id of current content
+	songDuration      float64 // duration of current song in seconds
+	lastPosition      float64 // last known position for end detection
+	stopMonitor       chan struct{} // channel to stop playback monitor
 
 	// Callbacks
 	onStateChange func(state models.PlayerState)
@@ -44,7 +61,27 @@ func NewController(executable string) *Controller {
 		socketPath: socketPath,
 		pidFile:    pidFile,
 		executable: executable,
+		displaySettings: DisplaySettings{
+			ScreenIndex:    -1,   // Auto
+			AutoFullscreen: true, // Default to fullscreen
+		},
 	}
+}
+
+// SetDisplaySettings configures which display to use for the player
+func (c *Controller) SetDisplaySettings(settings DisplaySettings) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.displaySettings = settings
+	log.Printf("[MPV] Display settings updated: screen=%d, fullscreen=%v, target=%s",
+		settings.ScreenIndex, settings.AutoFullscreen, settings.TargetDisplay)
+}
+
+// GetDisplaySettings returns the current display settings
+func (c *Controller) GetDisplaySettings() DisplaySettings {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.displaySettings
 }
 
 // getPidFilePath returns the path to store the MPV process ID
@@ -293,9 +330,24 @@ func (c *Controller) Start() error {
 		"--input-ipc-server=" + c.socketPath,
 		"--hwdec=auto",    // Hardware acceleration
 		"--volume=100",
-		"--fullscreen=no",
 		"--osc=no",        // Disable on-screen controller
 		"--osd-level=0",   // Minimal OSD
+	}
+
+	// Display/screen selection
+	if c.displaySettings.ScreenIndex >= 0 {
+		screenArg := fmt.Sprintf("--screen=%d", c.displaySettings.ScreenIndex)
+		fsScreenArg := fmt.Sprintf("--fs-screen=%d", c.displaySettings.ScreenIndex)
+		args = append(args, screenArg, fsScreenArg)
+		log.Printf("[MPV] Using screen index: %d", c.displaySettings.ScreenIndex)
+	}
+
+	// Fullscreen setting
+	if c.displaySettings.AutoFullscreen {
+		args = append(args, "--fullscreen=yes")
+		log.Printf("[MPV] Starting in fullscreen mode")
+	} else {
+		args = append(args, "--fullscreen=no")
 	}
 
 	// Platform-specific audio output
@@ -440,6 +492,13 @@ func (c *Controller) LoadFile(path string) error {
 	if c.conn == nil {
 		return fmt.Errorf("mpv not connected")
 	}
+
+	// Reset volume to 100 (may have been set to 0 by BGM fade-out)
+	c.conn.Set("volume", 100)
+
+	// Reset loop settings from image display
+	c.conn.Set("loop-file", "no")
+
 	_, err := c.conn.Call("loadfile", path)
 	return err
 }
@@ -447,12 +506,15 @@ func (c *Controller) LoadFile(path string) error {
 // LoadImage loads an image file and displays it indefinitely
 // Used for holding screens between songs
 func (c *Controller) LoadImage(path string) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if c.conn == nil {
 		return fmt.Errorf("mpv not connected")
 	}
+
+	// Mark that we're NOT playing a song (showing image/holding screen)
+	c.playingSong = false
 
 	// First set the properties for image display
 	c.conn.Set("image-display-duration", "inf")
@@ -463,15 +525,158 @@ func (c *Controller) LoadImage(path string) error {
 	return err
 }
 
-// LoadCDG loads a CDG file with its paired audio file
-// CDG files contain karaoke graphics that sync with the audio
-func (c *Controller) LoadCDG(cdgPath, audioPath string) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+// LoadBGMWithImage loads BGM audio while keeping a static image displayed
+func (c *Controller) LoadBGMWithImage(imagePath, audioURL string, targetVolume float64) error {
+	c.mu.Lock()
+
+	if c.conn == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("mpv not connected")
+	}
+
+	log.Printf("[MPV] Loading BGM with image: %s, audio: %s", imagePath, audioURL)
+
+	// Set volume to 0 for fade-in
+	c.conn.Set("volume", 0)
+
+	// Set image to display infinitely and loop
+	c.conn.Set("image-display-duration", "inf")
+	c.conn.Set("loop-file", "inf")
+
+	// Load the image first
+	_, err := c.conn.Call("loadfile", imagePath, "replace")
+	if err != nil {
+		c.mu.Unlock()
+		log.Printf("[MPV] Failed to load image: %v", err)
+		return err
+	}
+
+	c.mu.Unlock()
+
+	// Wait for image to start loading (outside mutex)
+	time.Sleep(500 * time.Millisecond)
+
+	// Now add the audio track
+	c.mu.Lock()
+	if c.conn != nil {
+		_, err = c.conn.Call("audio-add", audioURL, "select")
+		if err != nil {
+			log.Printf("[MPV] audio-add failed: %v - BGM will play without holding screen", err)
+			// Fallback: just load the audio directly
+			c.conn.Call("loadfile", audioURL, "replace")
+		} else {
+			log.Printf("[MPV] Successfully added audio track")
+		}
+	}
+	c.mu.Unlock()
+
+	// Fade in the volume over 2 seconds
+	go c.fadeVolume(0, targetVolume, 2*time.Second)
+
+	return nil
+}
+
+// UpdateBGMImage updates the displayed image while keeping BGM audio playing
+func (c *Controller) UpdateBGMImage(imagePath string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if c.conn == nil {
 		return fmt.Errorf("mpv not connected")
 	}
+
+	log.Printf("[MPV] Updating BGM image to: %s", imagePath)
+
+	// Get current volume to preserve it
+	vol, _ := c.conn.Get("volume")
+	currentVol, ok := vol.(float64)
+	if !ok {
+		currentVol = 50
+	}
+
+	// Get current audio URL - we need to re-add it after loading new image
+	// We'll use the audio-reload command or just load the image as external file
+
+	// Use video-add to replace the video track while keeping audio
+	// This loads the image into the video slot without affecting audio
+	_, err := c.conn.Call("video-add", imagePath, "select")
+	if err != nil {
+		log.Printf("[MPV] video-add failed: %v, trying loadfile approach", err)
+		// Fallback: The image update will happen when BGM stops
+		return err
+	}
+
+	// Restore volume in case it was affected
+	c.conn.Set("volume", currentVol)
+
+	return nil
+}
+
+// StopBGMWithFade stops BGM with a fade out effect
+func (c *Controller) StopBGMWithFade(fadeDuration time.Duration) error {
+	c.mu.Lock()
+	if c.conn == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("mpv not connected")
+	}
+
+	// Get current volume
+	vol, err := c.conn.Get("volume")
+	c.mu.Unlock()
+
+	if err != nil {
+		log.Printf("[MPV] Failed to get volume for fade: %v, using default", err)
+		vol = 50.0
+	}
+
+	currentVol, ok := vol.(float64)
+	if !ok {
+		currentVol = 50
+	}
+
+	log.Printf("[MPV] Stopping BGM with fade from volume %.0f", currentVol)
+
+	// Fade out (blocking)
+	c.fadeVolume(currentVol, 0, fadeDuration)
+
+	// Stop playback after fade completes
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err = c.conn.Call("stop")
+	return err
+}
+
+// fadeVolume smoothly transitions volume from start to end over duration
+func (c *Controller) fadeVolume(start, end float64, duration time.Duration) {
+	steps := 20
+	stepDuration := duration / time.Duration(steps)
+	volumeStep := (end - start) / float64(steps)
+
+	for i := 0; i <= steps; i++ {
+		vol := start + volumeStep*float64(i)
+		c.mu.Lock()
+		if c.conn != nil {
+			c.conn.Set("volume", vol)
+		}
+		c.mu.Unlock()
+		if i < steps {
+			time.Sleep(stepDuration)
+		}
+	}
+}
+
+// LoadCDG loads a CDG file with its paired audio file
+// CDG files contain karaoke graphics that sync with the audio
+func (c *Controller) LoadCDG(cdgPath, audioPath string) error {
+	c.mu.Lock()
+
+	if c.conn == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("mpv not connected")
+	}
+
+	// Mark that we're playing a song
+	c.playingSong = true
 
 	// Reset loop settings from image display
 	c.conn.Set("loop-file", "no")
@@ -482,6 +687,12 @@ func (c *Controller) LoadCDG(cdgPath, audioPath string) error {
 		"replace",
 		fmt.Sprintf("audio-files=%s", audioPath),
 	)
+	c.mu.Unlock()
+
+	// Start playback monitor to detect song end
+	if err == nil {
+		c.StartPlaybackMonitor()
+	}
 	return err
 }
 
@@ -506,6 +717,187 @@ func (c *Controller) Seek(position float64) error {
 	}
 	_, err := c.conn.Call("seek", position, "absolute")
 	return err
+}
+
+// SetPitch sets the pitch shift in semitones (-12 to +12)
+// Uses rubberband audio filter for high-quality pitch shifting
+func (c *Controller) SetPitch(semitones int) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("mpv not connected")
+	}
+
+	if semitones == 0 {
+		// Remove pitch filter
+		_, err := c.conn.Call("af", "remove", "@pitch")
+		return err
+	}
+
+	// Convert semitones to pitch scale: scale = 2^(semitones/12)
+	// +12 semitones = 2.0 (one octave up)
+	// -12 semitones = 0.5 (one octave down)
+	// Using precomputed constant: 2^(1/12) = 1.0594630943592953
+	pitchScale := 1.0
+	semitoneRatio := 1.0594630943592953
+	if semitones > 0 {
+		for i := 0; i < semitones; i++ {
+			pitchScale *= semitoneRatio
+		}
+	} else {
+		for i := 0; i > semitones; i-- {
+			pitchScale /= semitoneRatio
+		}
+	}
+
+	// Apply rubberband filter with pitch scale
+	// @pitch is a label so we can update/remove it later
+	filter := fmt.Sprintf("@pitch:rubberband=pitch-scale=%.6f", pitchScale)
+	_, err := c.conn.Call("af", "add", filter)
+	return err
+}
+
+// SetTempo sets the playback speed (0.5 to 2.0, 1.0 = normal)
+// This affects both audio and video speed
+func (c *Controller) SetTempo(speed float64) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("mpv not connected")
+	}
+
+	// Clamp speed to valid range
+	if speed < 0.5 {
+		speed = 0.5
+	}
+	if speed > 2.0 {
+		speed = 2.0
+	}
+
+	return c.conn.Set("speed", speed)
+}
+
+// ShowOverlay displays text on screen for a specified duration
+// Used for singer name announcements at song start
+func (c *Controller) ShowOverlay(text string, durationMs int) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("mpv not connected")
+	}
+
+	// Use show-text command: show-text <text> [duration_ms] [level]
+	// Level 1 = normal OSD message
+	_, err := c.conn.Call("show-text", text, durationMs, 1)
+	return err
+}
+
+// tickerSubPath is the path to the ticker subtitle file
+var tickerSubPath = filepath.Join(os.TempDir(), "songmartyn-ticker.ass")
+
+// ShowTicker displays a scrolling ticker with upcoming singer information
+// The ticker appears at the bottom of the screen and scrolls horizontally
+func (c *Controller) ShowTicker(entries []TickerEntry) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("mpv not connected")
+	}
+
+	if len(entries) == 0 {
+		return c.HideTicker()
+	}
+
+	// Build the ticker text
+	var tickerText strings.Builder
+	tickerText.WriteString("Up Next: ")
+	for i, entry := range entries {
+		if i > 0 {
+			tickerText.WriteString("  •  ")
+		}
+		tickerText.WriteString(entry.SingerName)
+		tickerText.WriteString(" - ")
+		tickerText.WriteString(entry.SongTitle)
+	}
+
+	// Create ASS subtitle with scrolling effect
+	// Banner effect scrolls text from right to left
+	assContent := fmt.Sprintf(`[Script Info]
+Title: SongMartyn Ticker
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Ticker,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,3,2,0,2,50,50,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,9:59:59.00,Ticker,,0,0,0,Banner;50;0;50,{\pos(960,1050)}%s
+`, tickerText.String())
+
+	// Write the ASS file
+	if err := os.WriteFile(tickerSubPath, []byte(assContent), 0644); err != nil {
+		return fmt.Errorf("failed to write ticker subtitle: %w", err)
+	}
+
+	// Load the subtitle as a secondary track
+	_, err := c.conn.Call("sub-add", tickerSubPath, "auto", "ticker", "eng")
+	return err
+}
+
+// HideTicker removes the scrolling ticker from the display
+func (c *Controller) HideTicker() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("mpv not connected")
+	}
+
+	// Remove any subtitle tracks titled "ticker"
+	// First get the count of sub tracks
+	count, err := c.conn.Get("track-list/count")
+	if err != nil {
+		return nil // No tracks, nothing to remove
+	}
+
+	trackCount, ok := count.(float64)
+	if !ok {
+		return nil
+	}
+
+	// Find and remove ticker tracks
+	for i := int(trackCount) - 1; i >= 0; i-- {
+		titlePath := fmt.Sprintf("track-list/%d/title", i)
+		title, err := c.conn.Get(titlePath)
+		if err != nil {
+			continue
+		}
+		if titleStr, ok := title.(string); ok && titleStr == "ticker" {
+			idPath := fmt.Sprintf("track-list/%d/id", i)
+			id, err := c.conn.Get(idPath)
+			if err != nil {
+				continue
+			}
+			if idNum, ok := id.(float64); ok {
+				c.conn.Call("sub-remove", int(idNum))
+			}
+		}
+	}
+
+	return nil
+}
+
+// TickerEntry represents a single entry in the scrolling ticker
+type TickerEntry struct {
+	SingerName string
+	SongTitle  string
 }
 
 // GetState returns the current player state
@@ -553,32 +945,50 @@ func (c *Controller) GetState() (models.PlayerState, error) {
 // SetVocalMix configures the audio filter for vocal assist mixing
 // Uses lavfi-complex to mix instrumental and vocal tracks
 func (c *Controller) SetVocalMix(instrumentalPath, vocalPath string, vocalGain float64) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
 
 	if c.conn == nil {
+		c.mu.Unlock()
 		return fmt.Errorf("mpv not connected")
 	}
 
+	// Mark that we're playing a song
+	c.playingSong = true
+
+	var err error
 	if vocalGain <= 0 {
 		// No vocals needed, just load instrumental
-		return c.LoadFile(instrumentalPath)
+		_, err = c.conn.Call("loadfile", instrumentalPath)
+	} else {
+		// Build lavfi-complex filter for mixing
+		// [aid1] = instrumental, [aid2] = vocals
+		filter := fmt.Sprintf(
+			"[aid1]volume=1.0[instr];[aid2]volume=%.2f[vox];[instr][vox]amix=inputs=2:duration=longest[ao]",
+			vocalGain,
+		)
+
+		// Load with external audio file and filter
+		_, err = c.conn.Call("loadfile", instrumentalPath,
+			"replace",
+			fmt.Sprintf("audio-files=%s", vocalPath),
+			fmt.Sprintf("lavfi-complex=%s", filter),
+		)
 	}
+	c.mu.Unlock()
 
-	// Build lavfi-complex filter for mixing
-	// [aid1] = instrumental, [aid2] = vocals
-	filter := fmt.Sprintf(
-		"[aid1]volume=1.0[instr];[aid2]volume=%.2f[vox];[instr][vox]amix=inputs=2:duration=longest[ao]",
-		vocalGain,
-	)
-
-	// Load with external audio file and filter
-	_, err := c.conn.Call("loadfile", instrumentalPath,
-		"replace",
-		fmt.Sprintf("audio-files=%s", vocalPath),
-		fmt.Sprintf("lavfi-complex=%s", filter),
-	)
+	// Start playback monitor to detect song end
+	if err == nil {
+		c.StartPlaybackMonitor()
+	}
 	return err
+}
+
+// SetPlayingSong marks whether we're currently playing a song (vs holding screen or BGM)
+// Used to determine if onTrackEnd should fire when playback ends
+func (c *Controller) SetPlayingSong(playing bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.playingSong = playing
 }
 
 // OnStateChange sets the callback for state changes
@@ -591,6 +1001,133 @@ func (c *Controller) OnTrackEnd(fn func()) {
 	c.onTrackEnd = fn
 }
 
+// StartPlaybackMonitor starts a goroutine to monitor playback position
+// and detect when a song ends (position reaches duration)
+func (c *Controller) StartPlaybackMonitor() {
+	// Stop any existing monitor
+	c.stopPlaybackMonitor()
+
+	c.mu.Lock()
+	c.stopMonitor = make(chan struct{})
+	c.lastPosition = 0
+	c.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
+		// Wait a moment for MPV to load the file and report duration
+		time.Sleep(1 * time.Second)
+
+		// Get initial duration
+		c.mu.Lock()
+		if c.conn != nil {
+			if dur, err := c.conn.Get("duration"); err == nil && dur != nil {
+				if f, ok := dur.(float64); ok && f > 0 {
+					c.songDuration = f
+					log.Printf("[MPV Monitor] Song duration: %.1f seconds", f)
+				}
+			}
+		}
+		stopChan := c.stopMonitor
+		c.mu.Unlock()
+
+		for {
+			select {
+			case <-stopChan:
+				log.Println("[MPV Monitor] Stopped")
+				return
+			case <-ticker.C:
+				c.mu.RLock()
+				if c.conn == nil || !c.playingSong {
+					c.mu.RUnlock()
+					continue
+				}
+
+				// Get current position
+				var position float64
+				var duration float64
+				var paused bool
+
+				if pos, err := c.conn.Get("time-pos"); err == nil && pos != nil {
+					if f, ok := pos.(float64); ok {
+						position = f
+					}
+				}
+				if dur, err := c.conn.Get("duration"); err == nil && dur != nil {
+					if f, ok := dur.(float64); ok {
+						duration = f
+					}
+				}
+				if p, err := c.conn.Get("pause"); err == nil && p != nil {
+					if b, ok := p.(bool); ok {
+						paused = b
+					}
+				}
+
+				lastPos := c.lastPosition
+				c.mu.RUnlock()
+
+				// Update duration if we got a valid one
+				if duration > 0 {
+					c.mu.Lock()
+					c.songDuration = duration
+					c.mu.Unlock()
+				}
+
+				// Log position every 10 seconds for debugging
+				if int(position)%10 == 0 && position > 0 && int(position) != int(lastPos) {
+					log.Printf("[MPV Monitor] Position: %.1f / %.1f (paused: %v)", position, duration, paused)
+				}
+
+				// Detect song end: position near duration OR position reset (looped)
+				// Check BEFORE pause skip - song might be paused at end due to --keep-open
+				if duration > 0 && position > 0 {
+					// Song ended if we're within 1 second of the end (or paused at end)
+					if position >= duration-1.0 {
+						log.Printf("[MPV Monitor] Song ended (position: %.1f, duration: %.1f)", position, duration)
+						c.mu.Lock()
+						c.playingSong = false
+						c.mu.Unlock()
+						c.stopPlaybackMonitor()
+						if c.onTrackEnd != nil {
+							c.onTrackEnd()
+						}
+						return
+					}
+
+					// Detect if position jumped backwards (indicating loop restart)
+					if lastPos > 5 && position < 2 && lastPos > position+5 {
+						log.Printf("[MPV Monitor] Song looped (last: %.1f, now: %.1f) - treating as end", lastPos, position)
+						c.mu.Lock()
+						c.playingSong = false
+						c.mu.Unlock()
+						c.stopPlaybackMonitor()
+						if c.onTrackEnd != nil {
+							c.onTrackEnd()
+						}
+						return
+					}
+				}
+
+				c.mu.Lock()
+				c.lastPosition = position
+				c.mu.Unlock()
+			}
+		}
+	}()
+}
+
+// stopPlaybackMonitor stops the playback monitor goroutine
+func (c *Controller) stopPlaybackMonitor() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopMonitor != nil {
+		close(c.stopMonitor)
+		c.stopMonitor = nil
+	}
+}
+
 // listenEvents listens for mpv events
 func (c *Controller) listenEvents() {
 	events, stopListening := c.conn.NewEventListener()
@@ -600,16 +1137,38 @@ func (c *Controller) listenEvents() {
 		switch event.Name {
 		case "end-file":
 			// Check the reason for end-file
-			// Reason can be: eof, stop, quit, error, redirect, unknown
+			// MPV returns reason as integer: 0=eof, 1=stop, 2=quit, 3=error, 4=redirect, 5=unknown
 			reason := "unknown"
-			if r, ok := event.ExtraData["reason"].(string); ok {
+			if r, ok := event.ExtraData["reason"].(float64); ok {
+				switch int(r) {
+				case 0:
+					reason = "eof"
+				case 1:
+					reason = "stop"
+				case 2:
+					reason = "quit"
+				case 3:
+					reason = "error"
+				case 4:
+					reason = "redirect"
+				}
+			} else if r, ok := event.ExtraData["reason"].(string); ok {
 				reason = r
 			}
-			fmt.Printf("[MPV EVENT] end-file (reason: %s, data: %+v)\n", reason, event.ExtraData)
 
-			// Only trigger onTrackEnd for natural end of file (eof)
-			// Skip for errors or other reasons
-			if reason == "eof" && c.onTrackEnd != nil {
+			c.mu.RLock()
+			wasPlayingSong := c.playingSong
+			c.mu.RUnlock()
+
+			fmt.Printf("[MPV EVENT] end-file (reason: %s, playingSong: %v, data: %+v)\n", reason, wasPlayingSong, event.ExtraData)
+
+			// Trigger onTrackEnd when a song reaches natural end (eof)
+			// Must have been playing a song, not just replacing content
+			if reason == "eof" && wasPlayingSong && c.onTrackEnd != nil {
+				c.mu.Lock()
+				c.playingSong = false // Song has ended
+				c.mu.Unlock()
+				log.Println("[MPV] Song finished naturally - triggering onTrackEnd")
 				c.onTrackEnd()
 			}
 		case "property-change":

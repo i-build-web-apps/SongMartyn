@@ -3,6 +3,7 @@ import type { ClientInfo, AdminAuthResponse } from '../types';
 import { wsService } from '../services/websocket';
 
 const ADMIN_TOKEN_KEY = 'songmartyn_admin_token';
+const MARTYN_KEY_STORAGE = 'songmartyn_key';
 const API_BASE = import.meta.env.DEV ? 'https://localhost:8443' : '';
 
 interface AdminStore {
@@ -50,9 +51,13 @@ export const useAdminStore = create<AdminStore>((set, get) => ({
 
       if (data.success) {
         set({ isAuthenticated: true, isLocal: data.is_local, authError: null });
-        // If local and no token, get one
-        if (data.is_local && !token) {
-          const authRes = await fetch(`${API_BASE}/api/admin/auth`);
+        // For local users, always refresh auth to ensure session is marked as admin
+        if (data.is_local) {
+          const martynKey = localStorage.getItem(MARTYN_KEY_STORAGE) || '';
+          const authUrl = martynKey
+            ? `${API_BASE}/api/admin/auth?martyn_key=${encodeURIComponent(martynKey)}`
+            : `${API_BASE}/api/admin/auth`;
+          const authRes = await fetch(authUrl);
           const authData: AdminAuthResponse = await authRes.json();
           if (authData.token) {
             localStorage.setItem(ADMIN_TOKEN_KEY, authData.token);
@@ -69,10 +74,11 @@ export const useAdminStore = create<AdminStore>((set, get) => ({
 
   authenticate: async (pin: string) => {
     try {
+      const martynKey = localStorage.getItem(MARTYN_KEY_STORAGE) || '';
       const res = await fetch(`${API_BASE}/api/admin/auth`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin }),
+        body: JSON.stringify({ pin, martyn_key: martynKey }),
       });
       const data: AdminAuthResponse = await res.json();
 

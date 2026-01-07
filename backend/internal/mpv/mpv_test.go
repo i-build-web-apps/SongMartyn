@@ -560,3 +560,142 @@ func TestHoldingScreenSkipsDuringBGMDocumentation(t *testing.T) {
 	//
 	// The holding screen image will be updated when BGM stops.
 }
+
+// =============================================================================
+// Display Settings Tests
+// =============================================================================
+
+// TestDisplaySettingsDefaults verifies display settings start with correct defaults
+func TestDisplaySettingsDefaults(t *testing.T) {
+	c := NewController("")
+
+	settings := c.GetDisplaySettings()
+
+	if settings.TargetDisplay != "" {
+		t.Errorf("Expected default TargetDisplay to be empty, got '%s'", settings.TargetDisplay)
+	}
+
+	if settings.ScreenIndex != -1 {
+		t.Errorf("Expected default ScreenIndex to be -1 (auto), got %d", settings.ScreenIndex)
+	}
+
+	// AutoFullscreen defaults to true for karaoke use case
+	if !settings.AutoFullscreen {
+		t.Error("Expected default AutoFullscreen to be true")
+	}
+}
+
+// TestSetDisplaySettings verifies SetDisplaySettings updates the settings correctly
+func TestSetDisplaySettings(t *testing.T) {
+	c := NewController("")
+
+	settings := DisplaySettings{
+		TargetDisplay:  "Dell U2715H",
+		ScreenIndex:    1,
+		AutoFullscreen: true,
+	}
+
+	c.SetDisplaySettings(settings)
+
+	result := c.GetDisplaySettings()
+
+	if result.TargetDisplay != "Dell U2715H" {
+		t.Errorf("Expected TargetDisplay 'Dell U2715H', got '%s'", result.TargetDisplay)
+	}
+
+	if result.ScreenIndex != 1 {
+		t.Errorf("Expected ScreenIndex 1, got %d", result.ScreenIndex)
+	}
+
+	if !result.AutoFullscreen {
+		t.Error("Expected AutoFullscreen to be true")
+	}
+}
+
+// TestDisplaySettingsScreenIndexZero verifies screen index 0 is valid (first display)
+func TestDisplaySettingsScreenIndexZero(t *testing.T) {
+	c := NewController("")
+
+	settings := DisplaySettings{
+		TargetDisplay:  "Primary Display",
+		ScreenIndex:    0, // First display (0-indexed)
+		AutoFullscreen: false,
+	}
+
+	c.SetDisplaySettings(settings)
+
+	result := c.GetDisplaySettings()
+
+	if result.ScreenIndex != 0 {
+		t.Errorf("Expected ScreenIndex 0, got %d", result.ScreenIndex)
+	}
+}
+
+// TestDisplaySettingsMPVArgsDocumentation documents the expected MPV arguments
+func TestDisplaySettingsMPVArgsDocumentation(t *testing.T) {
+	// This test documents the expected MPV arguments for display settings:
+	//
+	// When ScreenIndex >= 0:
+	//   --screen=<index>     : Specifies which display to render on (0-indexed)
+	//   --fs-screen=<index>  : Specifies which display to fullscreen on (0-indexed)
+	//
+	// When AutoFullscreen is true:
+	//   --fullscreen=yes     : Starts MPV in fullscreen mode
+	//
+	// When AutoFullscreen is false:
+	//   --fullscreen=no      : Starts MPV in windowed mode
+	//
+	// Example for secondary display with fullscreen:
+	//   mpv --screen=1 --fs-screen=1 --fullscreen=yes [other args...]
+	//
+	// The screen index is resolved from the display name in main.go:
+	//   - macOS: system_profiler SPDisplaysDataType
+	//   - Linux: xrandr --query
+	//   - Windows: PowerShell WMI queries
+}
+
+// TestDisplaySettingsWithCustomExecutable verifies display settings work with custom executable
+func TestDisplaySettingsWithCustomExecutable(t *testing.T) {
+	c := NewController("/Applications/mpv.app/Contents/MacOS/mpv")
+
+	settings := DisplaySettings{
+		TargetDisplay:  "External Display",
+		ScreenIndex:    2,
+		AutoFullscreen: true,
+	}
+
+	c.SetDisplaySettings(settings)
+
+	result := c.GetDisplaySettings()
+
+	// Verify settings are stored correctly regardless of executable path
+	if result.TargetDisplay != "External Display" {
+		t.Errorf("Expected TargetDisplay 'External Display', got '%s'", result.TargetDisplay)
+	}
+
+	if result.ScreenIndex != 2 {
+		t.Errorf("Expected ScreenIndex 2, got %d", result.ScreenIndex)
+	}
+}
+
+// TestDisplaySettingsAutoDetect verifies auto-detect mode (ScreenIndex = -1)
+func TestDisplaySettingsAutoDetect(t *testing.T) {
+	c := NewController("")
+
+	// Explicitly set auto-detect
+	settings := DisplaySettings{
+		TargetDisplay:  "",  // Empty = auto
+		ScreenIndex:    -1,  // -1 = auto-detect/primary
+		AutoFullscreen: false,
+	}
+
+	c.SetDisplaySettings(settings)
+
+	result := c.GetDisplaySettings()
+
+	if result.ScreenIndex != -1 {
+		t.Errorf("Expected ScreenIndex -1 (auto), got %d", result.ScreenIndex)
+	}
+
+	// When ScreenIndex is -1, mpv uses its default behavior (primary display)
+}

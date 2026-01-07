@@ -130,27 +130,19 @@ Keep it disabled if you only manage from the server computer.`,
     sections: [
       {
         heading: 'What is mpv?',
-        content: `mpv is a free, open-source media player that SongMartyn uses to play karaoke videos. It supports virtually all video formats and provides the audio controls needed for vocal mixing.`,
+        content: `mpv is a free, open-source media player that SongMartyn uses to play karaoke videos. It's fast, lightweight, and supports virtually all video formats including CDG+MP3 karaoke files.
+
+mpv is developed by volunteers and is completely free to use - there's no cost or licensing to worry about.`,
       },
       {
-        heading: 'Installation',
-        content: `
-**macOS:**
-\`\`\`
-brew install mpv
-\`\`\`
+        heading: 'Quick Setup',
+        content: `Click the "Install mpv" button next to the Video Player Path field. This will:
 
-**Ubuntu/Debian:**
-\`\`\`
-sudo apt install mpv
-\`\`\`
+- Detect your operating system
+- Show you the exact command to install mpv
+- Let you verify the installation worked
 
-**Windows:**
-Download from the mpv website and add to your PATH.`,
-        links: [
-          { label: 'mpv Official Site', url: 'https://mpv.io/' },
-          { label: 'mpv Installation Guide', url: 'https://mpv.io/installation/' },
-        ],
+The setup wizard provides platform-specific instructions for macOS (Homebrew), Linux (apt/dnf/pacman), and Windows (Chocolatey or direct download).`,
       },
       {
         heading: 'Configuration',
@@ -158,7 +150,19 @@ Download from the mpv website and add to your PATH.`,
 - \`mpv\` if mpv is in your system PATH (recommended)
 - Full path like \`/usr/local/bin/mpv\` or \`C:\\Program Files\\mpv\\mpv.exe\` otherwise
 
-SongMartyn will show an error on startup if mpv is not found.`,
+After installing, use the "Install mpv" button to verify the installation. If it shows a green checkmark with the version, you're all set!`,
+      },
+      {
+        heading: 'Troubleshooting',
+        content: `
+- **"mpv not found"**: Make sure mpv is installed and in your system PATH
+- **No audio**: Check your system audio output settings
+- **Video stuttering**: Try enabling hardware acceleration in your system settings
+- **CDG files not working**: Ensure your mpv build includes CDG support (most package manager versions do)`,
+        links: [
+          { label: 'mpv Official Site', url: 'https://mpv.io/' },
+          { label: 'mpv Installation Guide', url: 'https://mpv.io/installation/' },
+        ],
       },
     ],
   },

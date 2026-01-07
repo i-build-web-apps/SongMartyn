@@ -33,7 +33,9 @@ type Song struct {
 	CDGPath      string           `json:"cdg_path,omitempty"`      // Path to CDG graphics file
 	AudioPath    string           `json:"audio_path,omitempty"`    // Path to audio file (for CDG)
 	VocalAssist  VocalAssistLevel `json:"vocal_assist"`
-	AddedBy      string           `json:"added_by"` // MartynKey of who added it
+	KeyChange    int              `json:"key_change"`              // Semitones (-12 to +12)
+	TempoChange  float64          `json:"tempo_change"`            // Speed multiplier (0.5 to 2.0, 1.0 = normal)
+	AddedBy      string           `json:"added_by"`                // MartynKey of who added it
 	AddedAt      time.Time        `json:"added_at"`
 }
 
@@ -66,6 +68,7 @@ type Session struct {
 	AvatarConfig   *AvatarConfig    `json:"avatar_config,omitempty"` // Multiavatar configuration
 	VocalAssist    VocalAssistLevel `json:"vocal_assist"`
 	SearchHistory  []string         `json:"search_history"`
+	Favorites      []string         `json:"favorites"`               // Favorite song IDs
 	CurrentSongID  string           `json:"current_song_id,omitempty"`
 	ConnectedAt    time.Time        `json:"connected_at"`
 	LastSeenAt     time.Time        `json:"last_seen_at"`
@@ -89,6 +92,7 @@ type PlayerState struct {
 	VocalAssist   VocalAssistLevel `json:"vocal_assist"`
 	BGMActive     bool             `json:"bgm_active"`    // Background music playing
 	BGMEnabled    bool             `json:"bgm_enabled"`   // BGM feature enabled
+	Idle          bool             `json:"idle"`          // Showing holding screen (not playing a song)
 }
 
 // BGMSourceType represents the type of background music source
@@ -181,4 +185,21 @@ type SongHistory struct {
 	// Denormalized for easy display
 	SongTitle  string `json:"song_title"`
 	SongArtist string `json:"song_artist"`
+}
+
+// QueueMode represents how songs are ordered in the queue
+type QueueMode string
+
+const (
+	QueueModeFIFO     QueueMode = "fifo"     // First in, first out (default)
+	QueueModeRotation QueueMode = "rotation" // Fair rotation by singer
+)
+
+// FeatureSettings holds toggleable feature flags
+type FeatureSettings struct {
+	PitchControlEnabled   bool      `json:"pitch_control_enabled"`   // Allow key/pitch changes
+	TempoControlEnabled   bool      `json:"tempo_control_enabled"`   // Allow tempo/speed changes
+	FairRotationEnabled   bool      `json:"fair_rotation_enabled"`   // Use round-robin queue instead of FIFO
+	ScrollingTickerEnabled bool     `json:"scrolling_ticker_enabled"` // Show upcoming singers ticker on display
+	SingerNameOverlay     bool      `json:"singer_name_overlay"`      // Show singer name at start of songs
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
+	"songmartyn/internal/device"
 	"songmartyn/pkg/models"
 )
 
@@ -37,11 +38,15 @@ const (
 	MsgSeek           MessageType = "seek"            // Seek to position
 	MsgVocalAssist    MessageType = "vocal_assist"    // Set vocal assist level
 	MsgVolume         MessageType = "volume"          // Set volume
+	MsgKeyChange      MessageType = "key_change"      // Set pitch shift in semitones
+	MsgTempoChange    MessageType = "tempo_change"    // Set tempo/speed multiplier
 	MsgSetDisplayName MessageType = "set_display_name" // Set custom display name
 	MsgAutoplay       MessageType = "autoplay"        // Toggle autoplay
 	MsgQueueShuffle   MessageType = "queue_shuffle"   // Shuffle queue
 	MsgQueueRequeue   MessageType = "queue_requeue"   // Re-add song from history
 	MsgSetAFK         MessageType = "set_afk"         // Set AFK status
+	MsgAddFavorite    MessageType = "add_favorite"    // Add song to favorites
+	MsgRemoveFavorite MessageType = "remove_favorite" // Remove song from favorites
 
 	// Admin messages (Client -> Server)
 	MsgAdminSetAdmin    MessageType = "admin_set_admin"     // Promote/demote user to admin
@@ -49,10 +54,13 @@ const (
 	MsgAdminBlock       MessageType = "admin_block"         // Block a user
 	MsgAdminUnblock     MessageType = "admin_unblock"       // Unblock a user
 	MsgAdminSetAFK      MessageType = "admin_set_afk"       // Set user's AFK status
-	MsgAdminPlayNext    MessageType = "admin_play_next"     // Start next song now (skip countdown)
+	MsgAdminPlayNext    MessageType = "admin_play_next"     // Start next song with countdown
+	MsgAdminStartNow    MessageType = "admin_start_now"    // Start next song immediately (skip countdown)
 	MsgAdminStop        MessageType = "admin_stop"          // Stop playback and enter pending mode
 	MsgAdminSetName     MessageType = "admin_set_name"      // Change user's display name
 	MsgAdminSetNameLock MessageType = "admin_set_name_lock" // Lock/unlock user's name
+	MsgAdminToggleBGM   MessageType = "admin_toggle_bgm"   // Toggle background music
+	MsgAdminSetMessage  MessageType = "admin_set_message"  // Set holding screen message
 
 	// Server -> Client
 	MsgWelcome      MessageType = "welcome"       // Session restored/created
@@ -93,16 +101,20 @@ type Client struct {
 
 // ClientInfo contains client connection info for admin display
 type ClientInfo struct {
-	MartynKey    string              `json:"martyn_key"`
-	DisplayName  string              `json:"display_name"`
-	DeviceName   string              `json:"device_name"`
-	IPAddress    string              `json:"ip_address"`
-	IsAdmin      bool                `json:"is_admin"`
-	IsOnline     bool                `json:"is_online"`
-	IsAFK        bool                `json:"is_afk"`
-	IsBlocked    bool                `json:"is_blocked"`
-	BlockReason  string              `json:"block_reason,omitempty"`
-	AvatarConfig *models.AvatarConfig `json:"avatar_config,omitempty"`
+	MartynKey     string               `json:"martyn_key"`
+	DisplayName   string               `json:"display_name"`
+	DeviceName    string               `json:"device_name"`
+	DeviceType    string               `json:"device_type"`    // mobile, tablet, desktop
+	DeviceOS      string               `json:"device_os"`      // iOS, Android, Windows, macOS, Linux
+	DeviceBrowser string               `json:"device_browser"` // Safari, Chrome, Firefox, etc.
+	IPAddress     string               `json:"ip_address"`
+	IsAdmin       bool                 `json:"is_admin"`
+	IsOnline      bool                 `json:"is_online"`
+	IsAFK         bool                 `json:"is_afk"`
+	IsBlocked     bool                 `json:"is_blocked"`
+	BlockReason   string               `json:"block_reason,omitempty"`
+	AvatarConfig  *models.AvatarConfig `json:"avatar_config,omitempty"`
+	NameLocked    bool                 `json:"name_locked"`
 }
 
 // AdminSetAdminPayload is the payload for setting admin status
@@ -187,20 +199,27 @@ type Hub struct {
 	onSeek             func(client *Client, position float64)
 	onVocalAssist      func(client *Client, level models.VocalAssistLevel)
 	onVolume           func(client *Client, volume float64)
+	onKeyChange        func(client *Client, semitones int)
+	onTempoChange      func(client *Client, speed float64)
 	onSetDisplayName   func(client *Client, name string, avatarID string, avatarConfig *models.AvatarConfig)
 	onAutoplay         func(client *Client, enabled bool)
 	onQueueShuffle     func(client *Client)
 	onQueueRequeue     func(client *Client, songID string, martynKey string)
 	onSetAFK           func(client *Client, isAFK bool)
+	onAddFavorite      func(client *Client, songID string)
+	onRemoveFavorite   func(client *Client, songID string)
 	onAdminSetAdmin    func(client *Client, martynKey string, isAdmin bool) error
 	onAdminKick        func(client *Client, martynKey string, reason string) error
 	onAdminBlock       func(client *Client, martynKey string, durationMinutes int, reason string) error
 	onAdminUnblock     func(client *Client, martynKey string) error
 	onAdminSetAFK      func(client *Client, martynKey string, isAFK bool) error
 	onAdminPlayNext    func(client *Client) error
+	onAdminStartNow    func(client *Client) error
 	onAdminStop        func(client *Client) error
 	onAdminSetName     func(client *Client, martynKey string, displayName string) error
 	onAdminSetNameLock func(client *Client, martynKey string, locked bool) error
+	onAdminToggleBGM   func(client *Client) error
+	onAdminSetMessage  func(client *Client, message string) error
 	onClientDisconnect func(client *Client)
 }
 
@@ -381,20 +400,27 @@ func (h *Hub) SetHandlers(handlers HubHandlers) {
 	h.onSeek = handlers.OnSeek
 	h.onVocalAssist = handlers.OnVocalAssist
 	h.onVolume = handlers.OnVolume
+	h.onKeyChange = handlers.OnKeyChange
+	h.onTempoChange = handlers.OnTempoChange
 	h.onSetDisplayName = handlers.OnSetDisplayName
 	h.onAutoplay = handlers.OnAutoplay
 	h.onQueueShuffle = handlers.OnQueueShuffle
 	h.onQueueRequeue = handlers.OnQueueRequeue
 	h.onSetAFK = handlers.OnSetAFK
+	h.onAddFavorite = handlers.OnAddFavorite
+	h.onRemoveFavorite = handlers.OnRemoveFavorite
 	h.onAdminSetAdmin = handlers.OnAdminSetAdmin
 	h.onAdminKick = handlers.OnAdminKick
 	h.onAdminBlock = handlers.OnAdminBlock
 	h.onAdminUnblock = handlers.OnAdminUnblock
 	h.onAdminSetAFK = handlers.OnAdminSetAFK
 	h.onAdminPlayNext = handlers.OnAdminPlayNext
+	h.onAdminStartNow = handlers.OnAdminStartNow
 	h.onAdminStop = handlers.OnAdminStop
 	h.onAdminSetName = handlers.OnAdminSetName
 	h.onAdminSetNameLock = handlers.OnAdminSetNameLock
+	h.onAdminToggleBGM = handlers.OnAdminToggleBGM
+	h.onAdminSetMessage = handlers.OnAdminSetMessage
 	h.onClientDisconnect = handlers.OnClientDisconnect
 }
 
@@ -412,20 +438,27 @@ type HubHandlers struct {
 	OnSeek             func(client *Client, position float64)
 	OnVocalAssist      func(client *Client, level models.VocalAssistLevel)
 	OnVolume           func(client *Client, volume float64)
+	OnKeyChange        func(client *Client, semitones int)
+	OnTempoChange      func(client *Client, speed float64)
 	OnSetDisplayName   func(client *Client, name string, avatarID string, avatarConfig *models.AvatarConfig)
 	OnAutoplay         func(client *Client, enabled bool)
 	OnQueueShuffle     func(client *Client)
 	OnQueueRequeue     func(client *Client, songID string, martynKey string)
 	OnSetAFK           func(client *Client, isAFK bool)
+	OnAddFavorite      func(client *Client, songID string)
+	OnRemoveFavorite   func(client *Client, songID string)
 	OnAdminSetAdmin    func(client *Client, martynKey string, isAdmin bool) error
 	OnAdminKick        func(client *Client, martynKey string, reason string) error
 	OnAdminBlock       func(client *Client, martynKey string, durationMinutes int, reason string) error
 	OnAdminUnblock     func(client *Client, martynKey string) error
 	OnAdminSetAFK      func(client *Client, martynKey string, isAFK bool) error
 	OnAdminPlayNext    func(client *Client) error
+	OnAdminStartNow    func(client *Client) error
 	OnAdminStop        func(client *Client) error
 	OnAdminSetName     func(client *Client, martynKey string, displayName string) error
 	OnAdminSetNameLock func(client *Client, martynKey string, locked bool) error
+	OnAdminToggleBGM   func(client *Client) error
+	OnAdminSetMessage  func(client *Client, message string) error
 	OnClientDisconnect func(client *Client)
 }
 
@@ -592,6 +625,34 @@ func (c *Client) handleMessage(msg Message) {
 			c.hub.onVolume(c, volume)
 		}
 
+	case MsgKeyChange:
+		// Admin only - change pitch/key
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		var semitones int
+		if err := json.Unmarshal(msg.Payload, &semitones); err != nil {
+			return
+		}
+		if c.hub.onKeyChange != nil {
+			c.hub.onKeyChange(c, semitones)
+		}
+
+	case MsgTempoChange:
+		// Admin only - change tempo/speed
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			return
+		}
+		var speed float64
+		if err := json.Unmarshal(msg.Payload, &speed); err != nil {
+			return
+		}
+		if c.hub.onTempoChange != nil {
+			c.hub.onTempoChange(c, speed)
+		}
+
 	case MsgSetDisplayName:
 		var payload SetDisplayNamePayload
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
@@ -653,6 +714,32 @@ func (c *Client) handleMessage(msg Message) {
 		}
 		if c.hub.onSetAFK != nil {
 			c.hub.onSetAFK(c, isAFK)
+		}
+
+	case MsgAddFavorite:
+		// User adds a song to their favorites
+		if c.session == nil {
+			return
+		}
+		var songID string
+		if err := json.Unmarshal(msg.Payload, &songID); err != nil {
+			return
+		}
+		if c.hub.onAddFavorite != nil {
+			c.hub.onAddFavorite(c, songID)
+		}
+
+	case MsgRemoveFavorite:
+		// User removes a song from their favorites
+		if c.session == nil {
+			return
+		}
+		var songID string
+		if err := json.Unmarshal(msg.Payload, &songID); err != nil {
+			return
+		}
+		if c.hub.onRemoveFavorite != nil {
+			c.hub.onRemoveFavorite(c, songID)
 		}
 
 	case MsgAdminSetAdmin:
@@ -736,13 +823,41 @@ func (c *Client) handleMessage(msg Message) {
 		}
 
 	case MsgAdminPlayNext:
+		log.Printf("[DEBUG] MsgAdminPlayNext received from %s", c.conn.RemoteAddr())
+		// Check if client is admin
+		if c.session == nil {
+			log.Printf("[DEBUG] MsgAdminPlayNext REJECTED: session is nil")
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized - no session"})
+			return
+		}
+		if !c.session.IsAdmin {
+			log.Printf("[DEBUG] MsgAdminPlayNext REJECTED: user %s is not admin (IsAdmin=%v)", c.session.DisplayName, c.session.IsAdmin)
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized - not admin"})
+			return
+		}
+		log.Printf("[DEBUG] MsgAdminPlayNext AUTHORIZED for admin %s", c.session.DisplayName)
+		if c.hub.onAdminPlayNext != nil {
+			log.Printf("[DEBUG] Calling onAdminPlayNext handler")
+			if err := c.hub.onAdminPlayNext(c); err != nil {
+				log.Printf("[DEBUG] onAdminPlayNext returned error: %v", err)
+				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+			} else {
+				log.Printf("[DEBUG] onAdminPlayNext completed successfully")
+			}
+		} else {
+			log.Printf("[DEBUG] onAdminPlayNext handler is nil!")
+		}
+
+	case MsgAdminStartNow:
+		log.Printf("[DEBUG] MsgAdminStartNow received from %s", c.conn.RemoteAddr())
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
 			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
 			return
 		}
-		if c.hub.onAdminPlayNext != nil {
-			if err := c.hub.onAdminPlayNext(c); err != nil {
+		log.Printf("[DEBUG] MsgAdminStartNow AUTHORIZED for admin %s", c.session.DisplayName)
+		if c.hub.onAdminStartNow != nil {
+			if err := c.hub.onAdminStartNow(c); err != nil {
 				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
 			}
 		}
@@ -798,6 +913,37 @@ func (c *Client) handleMessage(msg Message) {
 				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
 			}
 		}
+
+	case MsgAdminToggleBGM:
+		log.Printf("[DEBUG] MsgAdminToggleBGM received from %s", c.conn.RemoteAddr())
+		// Check if client is admin
+		if c.session == nil || !c.session.IsAdmin {
+			log.Printf("[DEBUG] MsgAdminToggleBGM REJECTED - not admin")
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Admin access required"})
+			return
+		}
+		log.Printf("[DEBUG] MsgAdminToggleBGM AUTHORIZED for admin %s", c.session.DisplayName)
+		if c.hub.onAdminToggleBGM != nil {
+			if err := c.hub.onAdminToggleBGM(c); err != nil {
+				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+			}
+		}
+
+	case MsgAdminSetMessage:
+		// Check if client is admin
+		if c.session == nil || !c.session.IsAdmin {
+			c.hub.SendTo(c, MsgError, map[string]string{"error": "Admin access required"})
+			return
+		}
+		var message string
+		if err := json.Unmarshal(msg.Payload, &message); err != nil {
+			return
+		}
+		if c.hub.onAdminSetMessage != nil {
+			if err := c.hub.onAdminSetMessage(c, message); err != nil {
+				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+			}
+		}
 	}
 }
 
@@ -827,15 +973,21 @@ func (h *Hub) GetConnectedClients() []ClientInfo {
 	for client := range h.clients {
 		if client.session != nil && !seen[client.session.MartynKey] {
 			seen[client.session.MartynKey] = true
+			// Parse device info from user agent
+			deviceInfo := device.ParseUserAgent(client.userAgent)
 			clients = append(clients, ClientInfo{
-				MartynKey:    client.session.MartynKey,
-				DisplayName:  client.session.DisplayName,
-				DeviceName:   client.session.DeviceName,
-				IPAddress:    client.ipAddress,
-				IsAdmin:      client.session.IsAdmin,
-				IsOnline:     true,
-				IsAFK:        client.session.IsAFK,
-				AvatarConfig: client.session.AvatarConfig,
+				MartynKey:     client.session.MartynKey,
+				DisplayName:   client.session.DisplayName,
+				DeviceName:    client.session.DeviceName,
+				DeviceType:    deviceInfo.Type,
+				DeviceOS:      deviceInfo.OS,
+				DeviceBrowser: deviceInfo.Browser,
+				IPAddress:     client.ipAddress,
+				IsAdmin:       client.session.IsAdmin,
+				IsOnline:      true,
+				IsAFK:         client.session.IsAFK,
+				AvatarConfig:  client.session.AvatarConfig,
+				NameLocked:    client.session.NameLocked,
 			})
 		}
 	}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchStore, getFeatures } from '../stores/searchStore';
-import { useRoomStore, selectVocalAssist } from '../stores/roomStore';
+import { useRoomStore, selectVocalAssist, selectFavorites } from '../stores/roomStore';
 import type { LibrarySong, VocalAssistLevel } from '../types';
 import { VOCAL_LABELS } from '../types';
 
@@ -11,39 +11,73 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-function SongCard({ song, onSelect }: { song: LibrarySong; onSelect: () => void }) {
+function SongCard({ song, onSelect, isFavorited, onToggleFavorite }: {
+  song: LibrarySong;
+  onSelect: () => void;
+  isFavorited?: boolean;
+  onToggleFavorite?: () => void;
+}) {
   return (
-    <button
-      onClick={onSelect}
-      className="w-full flex items-center gap-3 p-3 bg-matte-black/50 rounded-xl hover:bg-matte-black transition-colors text-left"
-    >
-      {/* Thumbnail or placeholder */}
-      <div className="w-12 h-12 bg-matte-gray rounded-lg flex-shrink-0 flex items-center justify-center overflow-hidden">
-        {song.thumbnail_url ? (
-          <img src={song.thumbnail_url} alt="" className="w-full h-full object-cover" />
-        ) : (
-          <svg className="w-6 h-6 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
-            <path d="M18 3a1 1 0 00-1.196-.98l-10 2A1 1 0 006 5v9.114A4.369 4.369 0 005 14c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V7.82l8-1.6v5.894A4.37 4.37 0 0015 12c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V3z" />
-          </svg>
+    <div className="w-full flex items-center gap-3 p-3 bg-matte-black/50 rounded-xl hover:bg-matte-black transition-colors">
+      {/* Main clickable area */}
+      <button
+        onClick={onSelect}
+        className="flex items-center gap-3 flex-1 min-w-0 text-left"
+      >
+        {/* Thumbnail or placeholder */}
+        <div className="w-12 h-12 bg-matte-gray rounded-lg flex-shrink-0 flex items-center justify-center overflow-hidden">
+          {song.thumbnail_url ? (
+            <img src={song.thumbnail_url} alt="" className="w-full h-full object-cover" />
+          ) : (
+            <svg className="w-6 h-6 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M18 3a1 1 0 00-1.196-.98l-10 2A1 1 0 006 5v9.114A4.369 4.369 0 005 14c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V7.82l8-1.6v5.894A4.37 4.37 0 0015 12c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V3z" />
+            </svg>
+          )}
+        </div>
+
+        {/* Song info */}
+        <div className="flex-1 min-w-0">
+          <h4 className="text-white font-medium truncate">{song.title}</h4>
+          <p className="text-gray-400 text-sm truncate">{song.artist || 'Unknown Artist'}</p>
+        </div>
+
+        {/* Duration */}
+        {song.duration > 0 && (
+          <span className="text-gray-500 text-sm flex-shrink-0">{formatDuration(song.duration)}</span>
         )}
-      </div>
+      </button>
 
-      {/* Song info */}
-      <div className="flex-1 min-w-0">
-        <h4 className="text-white font-medium truncate">{song.title}</h4>
-        <p className="text-gray-400 text-sm truncate">{song.artist || 'Unknown Artist'}</p>
-      </div>
-
-      {/* Duration */}
-      {song.duration > 0 && (
-        <span className="text-gray-500 text-sm">{formatDuration(song.duration)}</span>
+      {/* Favorite button */}
+      {onToggleFavorite && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleFavorite();
+          }}
+          className={`p-2 rounded-lg transition-colors flex-shrink-0 ${
+            isFavorited
+              ? 'text-red-500 hover:text-red-400'
+              : 'text-gray-500 hover:text-red-400'
+          }`}
+          title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+        >
+          <svg className="w-5 h-5" fill={isFavorited ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+          </svg>
+        </button>
       )}
 
-      {/* Add icon */}
-      <svg className="w-5 h-5 text-yellow-neon flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-      </svg>
-    </button>
+      {/* Add to queue icon */}
+      <button
+        onClick={onSelect}
+        className="p-2 text-yellow-neon hover:text-yellow-300 transition-colors flex-shrink-0"
+        title="Add to queue"
+      >
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
+      </button>
+    </div>
   );
 }
 
@@ -148,6 +182,7 @@ export function Search() {
     results,
     popularSongs,
     historySongs,
+    favoriteSongs,
     youtubeResults,
     activeTab,
     isLoading,
@@ -159,7 +194,10 @@ export function Search() {
     closeSearch,
     addToQueue,
     openSearch,
+    toggleFavorite,
   } = useSearchStore();
+
+  const favorites = useRoomStore(selectFavorites);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const searchTimeoutRef = useRef<number | null>(null);
@@ -226,6 +264,7 @@ export function Search() {
     activeTab === 'search' ? results :
     activeTab === 'popular' ? popularSongs :
     activeTab === 'history' ? historySongs :
+    activeTab === 'favorites' ? favoriteSongs :
     activeTab === 'youtube' ? youtubeResults : [];
 
   const handleSelectSong = (song: LibrarySong) => {
@@ -245,6 +284,7 @@ export function Search() {
     if (activeTab === 'search' && query) return 'No songs found in library';
     if (activeTab === 'popular') return 'No popular songs yet';
     if (activeTab === 'history') return 'No song history yet';
+    if (activeTab === 'favorites') return 'No favorites yet - tap the heart on any song to save it!';
     if (activeTab === 'youtube' && !query) return 'Search YouTube for karaoke tracks...';
     if (activeTab === 'youtube' && query) return 'No YouTube results found';
     return '';
@@ -316,6 +356,7 @@ export function Search() {
             <TabButton label="YouTube" active={activeTab === 'youtube'} onClick={() => setActiveTab('youtube')} />
           )}
           <TabButton label="Popular" active={activeTab === 'popular'} onClick={() => setActiveTab('popular')} />
+          <TabButton label="Favorites" active={activeTab === 'favorites'} onClick={() => setActiveTab('favorites')} />
           <TabButton label="My Songs" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
         </div>
       </div>
@@ -342,13 +383,20 @@ export function Search() {
               <p className="text-gray-500 text-sm mb-3">
                 {currentSongs.length} {currentSongs.length === 1 ? 'result' : 'results'}
               </p>
-              {currentSongs.map((song) => (
-                <SongCard
-                  key={song.id}
-                  song={song}
-                  onSelect={() => handleSelectSong(song)}
-                />
-              ))}
+              {currentSongs.map((song) => {
+                // Show favorite button for library songs (not YouTube)
+                const isLibrarySong = !String(song.id).startsWith('youtube:');
+                const songId = String(song.id);
+                return (
+                  <SongCard
+                    key={song.id}
+                    song={song}
+                    onSelect={() => handleSelectSong(song)}
+                    isFavorited={isLibrarySong ? favorites.includes(songId) : undefined}
+                    onToggleFavorite={isLibrarySong ? () => toggleFavorite(songId) : undefined}
+                  />
+                );
+              })}
             </>
           )}
         </div>

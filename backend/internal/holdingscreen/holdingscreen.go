@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/fogleman/gg"
@@ -22,6 +23,18 @@ import (
 	"songmartyn/internal/avatar"
 	"songmartyn/pkg/models"
 )
+
+// emojiRegex matches common emoji characters
+// Ranges: Misc Symbols, Dingbats, Emoticons, Transport, Misc Pictographs, Supplemental, Flags, Variation Selectors
+var emojiRegex = regexp.MustCompile(`[\x{1F300}-\x{1F9FF}]|[\x{2600}-\x{26FF}]|[\x{2700}-\x{27BF}]|[\x{1F600}-\x{1F64F}]|[\x{1F680}-\x{1F6FF}]|[\x{FE00}-\x{FE0F}]|[\x{1F1E0}-\x{1F1FF}]|[\x{2B50}-\x{2B55}]|[\x{23E9}-\x{23F3}]|[\x{231A}-\x{231B}]|[\x{2934}-\x{2935}]|[\x{25AA}-\x{25AB}]|[\x{25B6}]|[\x{25C0}]|[\x{25FB}-\x{25FE}]|[\x{2614}-\x{2615}]|[\x{2648}-\x{2653}]|[\x{267F}]|[\x{2693}]|[\x{26A1}]|[\x{26AA}-\x{26AB}]|[\x{26BD}-\x{26BE}]|[\x{26C4}-\x{26C5}]|[\x{26CE}]|[\x{26D4}]|[\x{26EA}]|[\x{26F2}-\x{26F3}]|[\x{26F5}]|[\x{26FA}]|[\x{26FD}]|[\x{2702}]|[\x{2705}]|[\x{2708}-\x{270D}]|[\x{270F}]|[\x{2712}]|[\x{2714}]|[\x{2716}]|[\x{271D}]|[\x{2721}]|[\x{2728}]|[\x{2733}-\x{2734}]|[\x{2744}]|[\x{2747}]|[\x{274C}]|[\x{274E}]|[\x{2753}-\x{2755}]|[\x{2757}]|[\x{2763}-\x{2764}]|[\x{2795}-\x{2797}]|[\x{27A1}]|[\x{27B0}]|[\x{27BF}]|[\x{2934}-\x{2935}]|[\x{2B05}-\x{2B07}]|[\x{2B1B}-\x{2B1C}]|[\x{3030}]|[\x{303D}]|[\x{3297}]|[\x{3299}]`)
+
+// stripEmoji removes emoji characters from text (fonts don't support them)
+func stripEmoji(text string) string {
+	result := emojiRegex.ReplaceAllString(text, "")
+	// Clean up multiple spaces that might result from emoji removal
+	result = regexp.MustCompile(`\s+`).ReplaceAllString(result, " ")
+	return strings.TrimSpace(result)
+}
 
 // HTTP client that skips TLS verification for localhost
 var insecureClient = &http.Client{
@@ -87,7 +100,7 @@ type NextUpInfo struct {
 }
 
 // Generate creates a holding screen image and returns the file path
-func (g *Generator) Generate(connectURL string, nextUp *NextUpInfo) (string, error) {
+func (g *Generator) Generate(connectURL string, nextUp *NextUpInfo, message string) (string, error) {
 	// Create canvas
 	dc := gg.NewContext(canvasWidth, canvasHeight)
 
@@ -96,6 +109,11 @@ func (g *Generator) Generate(connectURL string, nextUp *NextUpInfo) (string, err
 
 	// Draw semi-transparent overlay at bottom for content area
 	g.drawBottomOverlay(dc)
+
+	// Draw admin message banner if set
+	if message != "" {
+		g.drawMessageBanner(dc, message)
+	}
 
 	// Draw QR code section (bottom left)
 	g.drawQRSection(dc, connectURL)
@@ -156,6 +174,41 @@ func (g *Generator) drawBottomOverlay(dc *gg.Context) {
 		dc.SetRGBA(0, 0, 0, alpha)
 		dc.DrawRectangle(0, startY+float64(y), canvasWidth, 1)
 		dc.Fill()
+	}
+}
+
+// drawMessageBanner draws an admin message banner at the top of the screen
+func (g *Generator) drawMessageBanner(dc *gg.Context, message string) {
+	bannerHeight := 80.0
+	padding := 30.0
+
+	// Strip emojis from message (fonts don't support them)
+	displayMessage := stripEmoji(message)
+	if displayMessage == "" {
+		return // Nothing to display after stripping emojis
+	}
+
+	// Draw semi-transparent background
+	dc.SetRGBA(0, 0, 0, 0.8)
+	dc.DrawRectangle(0, 0, canvasWidth, bannerHeight)
+	dc.Fill()
+
+	// Draw yellow accent line at bottom of banner
+	dc.SetColor(yellowColor)
+	dc.DrawRectangle(0, bannerHeight-4, canvasWidth, 4)
+	dc.Fill()
+
+	// Draw message text centered
+	dc.SetColor(whiteColor)
+	if err := loadFont(dc, 36); err == nil {
+		// Measure text width to center it
+		textWidth, _ := dc.MeasureString(displayMessage)
+		x := (canvasWidth - textWidth) / 2
+		y := (bannerHeight + 36) / 2 // Vertically center (36 is approx font size)
+		if x < padding {
+			x = padding // Don't go past padding
+		}
+		dc.DrawString(displayMessage, x, y)
 	}
 }
 

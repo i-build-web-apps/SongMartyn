@@ -13,11 +13,12 @@ import (
 
 // Manager handles the song queue with persistence
 type Manager struct {
-	db       *sql.DB
-	songs    []models.Song
-	position int
-	autoplay bool
-	mu       sync.RWMutex
+	db           *sql.DB
+	songs        []models.Song
+	position     int
+	autoplay     bool
+	fairRotation bool  // Use round-robin queue instead of FIFO
+	mu           sync.RWMutex
 
 	// Callbacks
 	onChange func()
@@ -78,6 +79,10 @@ func NewManager(dbPath string) (*Manager, error) {
 	if err := m.loadQueue(); err != nil {
 		return nil, err
 	}
+
+	// Always start with autoplay OFF - requires manual toggle each session
+	m.autoplay = false
+	m.db.Exec(`UPDATE queue_state SET autoplay = 0 WHERE id = 1`)
 
 	return m, nil
 }
@@ -143,6 +148,28 @@ func (m *Manager) loadQueue() error {
 func (m *Manager) Add(song models.Song) error {
 	m.mu.Lock()
 	song.AddedAt = time.Now()
+
+	if m.fairRotation {
+		// Fair rotation: insert at position that gives fair turns
+		insertPos := m.findFairInsertPosition(song.AddedBy)
+		if insertPos < len(m.songs) {
+			// Insert in the middle
+			m.songs = append(m.songs[:insertPos], append([]models.Song{song}, m.songs[insertPos:]...)...)
+		} else {
+			// Insert at end
+			m.songs = append(m.songs, song)
+		}
+		// Reorder all songs in DB
+		err := m.reorderQueue()
+		onChange := m.onChange
+		m.mu.Unlock()
+		if onChange != nil {
+			onChange()
+		}
+		return err
+	}
+
+	// Standard FIFO: append to end
 	m.songs = append(m.songs, song)
 	err := m.saveSong(song, len(m.songs)-1)
 	onChange := m.onChange // Capture callback before unlocking
@@ -153,6 +180,56 @@ func (m *Manager) Add(song models.Song) error {
 		onChange()
 	}
 	return err
+}
+
+// findFairInsertPosition finds the optimal position to insert a song for fair rotation
+// The algorithm ensures singers take turns fairly
+func (m *Manager) findFairInsertPosition(singerKey string) int {
+	// Only consider upcoming songs (after current position)
+	upcomingStart := m.position
+	if upcomingStart < 0 {
+		upcomingStart = 0
+	}
+
+	// Count songs per singer in upcoming queue
+	singerCounts := make(map[string]int)
+	for i := upcomingStart; i < len(m.songs); i++ {
+		singerCounts[m.songs[i].AddedBy]++
+	}
+
+	// How many songs does this singer already have?
+	thisSingerCount := singerCounts[singerKey]
+
+	// Find the maximum songs any singer has
+	maxCount := 0
+	for _, count := range singerCounts {
+		if count > maxCount {
+			maxCount = count
+		}
+	}
+
+	// If this singer already has the most songs, insert at end
+	if thisSingerCount >= maxCount && maxCount > 0 {
+		return len(m.songs)
+	}
+
+	// Otherwise, insert after the point where all singers have at least thisSingerCount songs
+	// This ensures fair rotation
+	insertPos := len(m.songs)
+	countAtPos := make(map[string]int)
+
+	for i := upcomingStart; i < len(m.songs); i++ {
+		countAtPos[m.songs[i].AddedBy]++
+
+		// Check if this singer now has more songs than we do
+		if countAtPos[singerKey] > thisSingerCount {
+			// Insert before this position
+			insertPos = i
+			break
+		}
+	}
+
+	return insertPos
 }
 
 // Remove removes a song from the queue by ID
@@ -474,6 +551,21 @@ func (m *Manager) SetAutoplay(enabled bool) {
 	}
 }
 
+// SetFairRotation enables or disables fair rotation mode
+// When enabled, songs are inserted to ensure singers take fair turns
+func (m *Manager) SetFairRotation(enabled bool) {
+	m.mu.Lock()
+	m.fairRotation = enabled
+	m.mu.Unlock()
+}
+
+// GetFairRotation returns whether fair rotation is enabled
+func (m *Manager) GetFairRotation() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.fairRotation
+}
+
 // btoi converts bool to int for SQLite
 func btoi(b bool) int {
 	if b {
@@ -613,6 +705,17 @@ func (m *Manager) saveSong(song models.Song, order int) error {
 		order,
 	)
 	return err
+}
+
+// reorderQueue saves all songs with their current position in the queue
+// Must be called with lock held
+func (m *Manager) reorderQueue() error {
+	for i, song := range m.songs {
+		if err := m.saveSong(song, i); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // savePosition persists the queue position

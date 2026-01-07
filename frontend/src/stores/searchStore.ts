@@ -41,7 +41,7 @@ function historyToSong(history: SongHistory): LibrarySong {
   };
 }
 
-export type SearchTab = 'search' | 'popular' | 'history' | 'youtube';
+export type SearchTab = 'search' | 'popular' | 'history' | 'youtube' | 'favorites';
 
 interface YouTubeResult {
   id: string;
@@ -72,6 +72,7 @@ interface SearchStore {
   results: LibrarySong[];
   popularSongs: LibrarySong[];
   historySongs: LibrarySong[];
+  favoriteSongs: LibrarySong[];
   youtubeResults: LibrarySong[];
   activeTab: SearchTab;
   isLoading: boolean;
@@ -84,9 +85,11 @@ interface SearchStore {
   searchYouTube: () => Promise<void>;
   fetchPopular: () => Promise<void>;
   fetchHistory: () => Promise<void>;
+  fetchFavorites: () => Promise<void>;
   openSearch: () => void;
   closeSearch: () => void;
   addToQueue: (song: LibrarySong, vocalAssist?: VocalAssistLevel) => void;
+  toggleFavorite: (songId: string) => void;
 }
 
 const getMartynKey = (): string | null => {
@@ -98,6 +101,7 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
   results: [],
   popularSongs: [],
   historySongs: [],
+  favoriteSongs: [],
   youtubeResults: [],
   activeTab: 'search',
   isLoading: false,
@@ -112,6 +116,8 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
       get().fetchPopular();
     } else if (tab === 'history' && get().historySongs.length === 0) {
       get().fetchHistory();
+    } else if (tab === 'favorites') {
+      get().fetchFavorites();
     }
   },
 
@@ -197,6 +203,45 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
     } catch (err) {
       console.error('Failed to fetch history:', err);
       set({ historySongs: [], isLoading: false });
+    }
+  },
+
+  fetchFavorites: async () => {
+    const roomStore = useRoomStore.getState();
+    const favorites = roomStore.session?.favorites || [];
+
+    if (favorites.length === 0) {
+      set({ favoriteSongs: [], isLoading: false });
+      return;
+    }
+
+    set({ isLoading: true });
+    try {
+      // Fetch song details for each favorite ID
+      const res = await fetch(`${API_BASE}/api/library/songs?ids=${favorites.join(',')}`);
+      if (res.ok) {
+        const songs: LibrarySong[] = await res.json();
+        set({ favoriteSongs: songs, isLoading: false });
+      } else {
+        set({ favoriteSongs: [], isLoading: false });
+      }
+    } catch (err) {
+      console.error('Failed to fetch favorites:', err);
+      set({ favoriteSongs: [], isLoading: false });
+    }
+  },
+
+  toggleFavorite: (songId: string) => {
+    const roomStore = useRoomStore.getState();
+    const favorites = roomStore.session?.favorites || [];
+    const isFavorited = favorites.includes(songId);
+
+    if (isFavorited) {
+      wsService.removeFavorite(songId);
+      roomStore.addNotification('info', 'Removed from favorites');
+    } else {
+      wsService.addFavorite(songId);
+      roomStore.addNotification('success', 'Added to favorites');
     }
   },
 

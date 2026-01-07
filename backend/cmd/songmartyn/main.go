@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/grandcat/zeroconf"
 	"github.com/joho/godotenv"
 
 	"songmartyn/internal/admin"
@@ -52,12 +53,45 @@ type Config struct {
 	VideoPlayer   string
 	LaunchBrowser bool // Auto-launch admin page on startup
 
+	// Display settings
+	TargetDisplay  string // Name of display to use for video player
+	AutoFullscreen bool   // Automatically fullscreen the player on startup
+
 	// Feature toggles
 	PitchControlEnabled    bool
 	TempoControlEnabled    bool
 	FairRotationEnabled    bool
 	ScrollingTickerEnabled bool
 	SingerNameOverlay      bool
+
+	// mDNS settings
+	MDNSHostname string // Hostname to advertise via mDNS (e.g., "songmartyn" becomes "songmartyn.local")
+}
+
+// DiagnosticsInfo represents system diagnostics
+type DiagnosticsInfo struct {
+	PortChecks      []PortCheck   `json:"port_checks"`
+	Displays        []DisplayInfo `json:"displays"`
+	FirewallEnabled bool          `json:"firewall_enabled"`
+	FirewallStatus  string        `json:"firewall_status"`
+}
+
+// PortCheck represents a network port status check
+type PortCheck struct {
+	Port        int    `json:"port"`
+	Protocol    string `json:"protocol"`
+	Description string `json:"description"`
+	Status      string `json:"status"` // "open", "closed", "error"
+	Error       string `json:"error,omitempty"`
+}
+
+// DisplayInfo represents a connected display
+type DisplayInfo struct {
+	Name       string `json:"name"`
+	Resolution string `json:"resolution"`
+	Type       string `json:"type"`       // "built-in", "external", etc.
+	Connection string `json:"connection"` // "HDMI", "DisplayPort", etc.
+	Main       bool   `json:"main"`
 }
 
 // App holds the application state
@@ -78,11 +112,22 @@ type App struct {
 	// Idle state (showing holding screen, not playing a song)
 	idle bool
 
+	// Holding screen message (admin-controlled)
+	holdingMessage   string
+	holdingMessageMu sync.RWMutex
+
 	// Inter-song countdown state
 	countdown       models.CountdownState
 	countdownTicker *time.Ticker
 	countdownStop   chan struct{}
 	countdownMu     sync.Mutex
+
+	// System diagnostics (cached at startup)
+	diagnostics   DiagnosticsInfo
+	diagnosticsMu sync.RWMutex
+
+	// mDNS server for local discovery
+	mdnsServer *zeroconf.Server
 }
 
 // getEnv returns environment variable value or default
@@ -232,12 +277,19 @@ func main() {
 		VideoPlayer:   getEnv("VIDEO_PLAYER", "mpv"),
 		LaunchBrowser: getEnvBool("LAUNCH_BROWSER", false),
 
+		// Display settings
+		TargetDisplay:  getEnv("TARGET_DISPLAY", ""),
+		AutoFullscreen: getEnvBool("AUTO_FULLSCREEN", true),
+
 		// Feature toggles (default: all enabled)
 		PitchControlEnabled:    getEnvBool("PITCH_CONTROL_ENABLED", true),
 		TempoControlEnabled:    getEnvBool("TEMPO_CONTROL_ENABLED", true),
 		FairRotationEnabled:    getEnvBool("FAIR_ROTATION_ENABLED", false),
 		ScrollingTickerEnabled: getEnvBool("SCROLLING_TICKER_ENABLED", true),
 		SingerNameOverlay:      getEnvBool("SINGER_NAME_OVERLAY", true),
+
+		// mDNS hostname (e.g., "karaoke" becomes "karaoke.local")
+		MDNSHostname: getEnv("MDNS_HOSTNAME", "karaoke"),
 	}
 
 	// Flags override env values if provided
@@ -322,8 +374,32 @@ func NewApp(config Config) (*App, error) {
 	// Initialize WebSocket hub
 	hub := websocket.NewHub()
 
-	// Initialize mpv controller
+	// Initialize mpv controller with display settings
 	mpvCtrl := mpv.NewController(config.VideoPlayer)
+
+	// Configure display settings
+	displaySettings := mpv.DisplaySettings{
+		TargetDisplay:  config.TargetDisplay,
+		ScreenIndex:    -1, // Will be resolved from display name
+		AutoFullscreen: config.AutoFullscreen,
+	}
+
+	// If a target display is specified, try to find its screen index
+	if config.TargetDisplay != "" {
+		displays := getConnectedDisplays()
+		for i, d := range displays {
+			if d.Name == config.TargetDisplay {
+				displaySettings.ScreenIndex = i
+				log.Printf("Resolved display '%s' to screen index %d", config.TargetDisplay, i)
+				break
+			}
+		}
+		if displaySettings.ScreenIndex < 0 {
+			log.Printf("Warning: Target display '%s' not found, using auto", config.TargetDisplay)
+		}
+	}
+
+	mpvCtrl.SetDisplaySettings(displaySettings)
 
 	// Initialize admin manager
 	adminMgr := admin.NewManager(config.AdminPIN)
@@ -363,14 +439,34 @@ func NewApp(config Config) (*App, error) {
 	}
 
 	app := &App{
-		config:        config,
-		mpv:           mpvCtrl,
-		hub:           hub,
-		sessions:      sessions,
-		queue:         queueMgr,
-		admin:         adminMgr,
-		library:       libraryMgr,
-		holdingScreen: holdingScreenGen,
+		config:         config,
+		mpv:            mpvCtrl,
+		hub:            hub,
+		sessions:       sessions,
+		queue:          queueMgr,
+		admin:          adminMgr,
+		library:        libraryMgr,
+		holdingScreen:  holdingScreenGen,
+		holdingMessage: getEnv("HOLDING_MESSAGE", ""),
+	}
+
+	// Start mDNS server if hostname is configured
+	if config.MDNSHostname != "" {
+		portNum, _ := strconv.Atoi(config.Port)
+		mdnsServer, err := zeroconf.Register(
+			config.MDNSHostname,       // Instance name
+			"_https._tcp",             // Service type
+			"local.",                  // Domain
+			portNum,                   // Port
+			[]string{"txtv=0", "lo=1", "path=/"},  // TXT records
+			nil,                       // Interfaces (nil = all)
+		)
+		if err != nil {
+			log.Printf("Warning: Failed to start mDNS server: %v", err)
+		} else {
+			app.mdnsServer = mdnsServer
+			log.Printf("mDNS: Advertising as %s.local:%d", config.MDNSHostname, portNum)
+		}
 	}
 
 	// Load BGM settings from .env
@@ -938,6 +1034,22 @@ func (app *App) setupHandlers() {
 			return nil
 		},
 
+		OnAdminSetMessage: func(client *websocket.Client, message string) error {
+			app.holdingMessageMu.Lock()
+			app.holdingMessage = message
+			app.holdingMessageMu.Unlock()
+			log.Printf("Admin %s set holding screen message: %q", client.GetSession().DisplayName, message)
+
+			// Persist to .env file
+			if err := saveEnvFile(map[string]string{"HOLDING_MESSAGE": message}); err != nil {
+				log.Printf("Warning: Failed to save holding message to .env: %v", err)
+			}
+
+			// Refresh the holding screen to show the new message
+			app.showHoldingScreen()
+			return nil
+		},
+
 		OnClientDisconnect: func(client *websocket.Client) {
 			if sess := client.GetSession(); sess != nil {
 				app.sessions.SetOnline(sess.MartynKey, false)
@@ -1086,6 +1198,9 @@ func (app *App) broadcastClientList() {
 			sess := app.sessions.Get(bu.MartynKey)
 			deviceName := ""
 			ipAddress := ""
+			deviceType := ""
+			deviceOS := ""
+			deviceBrowser := ""
 			var avatarConfig *models.AvatarConfig
 			nameLocked := false
 			if sess != nil {
@@ -1093,18 +1208,28 @@ func (app *App) broadcastClientList() {
 				ipAddress = sess.IPAddress
 				avatarConfig = sess.AvatarConfig
 				nameLocked = sess.NameLocked
+				// Parse device info from stored user agent
+				if sess.UserAgent != "" {
+					deviceInfo := device.ParseUserAgent(sess.UserAgent)
+					deviceType = deviceInfo.Type
+					deviceOS = deviceInfo.OS
+					deviceBrowser = deviceInfo.Browser
+				}
 			}
 			clients = append(clients, websocket.ClientInfo{
-				MartynKey:    bu.MartynKey,
-				DisplayName:  bu.DisplayName,
-				DeviceName:   deviceName,
-				IPAddress:    ipAddress,
-				IsAdmin:      false,
-				IsOnline:     false,
-				IsBlocked:    true,
-				BlockReason:  bu.Reason,
-				AvatarConfig: avatarConfig,
-				NameLocked:   nameLocked,
+				MartynKey:     bu.MartynKey,
+				DisplayName:   bu.DisplayName,
+				DeviceName:    deviceName,
+				DeviceType:    deviceType,
+				DeviceOS:      deviceOS,
+				DeviceBrowser: deviceBrowser,
+				IPAddress:     ipAddress,
+				IsAdmin:       false,
+				IsOnline:      false,
+				IsBlocked:     true,
+				BlockReason:   bu.Reason,
+				AvatarConfig:  avatarConfig,
+				NameLocked:    nameLocked,
 			})
 		}
 	}
@@ -1199,8 +1324,13 @@ func (app *App) generateHoldingScreenImage() string {
 		}
 	}
 
+	// Get the admin message if set
+	app.holdingMessageMu.RLock()
+	message := app.holdingMessage
+	app.holdingMessageMu.RUnlock()
+
 	// Generate the holding screen
-	imagePath, err := app.holdingScreen.Generate(connectURL, nextUp)
+	imagePath, err := app.holdingScreen.Generate(connectURL, nextUp, message)
 	if err != nil {
 		log.Printf("Failed to generate holding screen: %v", err)
 		return ""
@@ -1243,17 +1373,25 @@ func (app *App) showHoldingScreen() {
 		}
 	}
 
+	// Get the admin message if set
+	app.holdingMessageMu.RLock()
+	message := app.holdingMessage
+	app.holdingMessageMu.RUnlock()
+
 	// Generate the holding screen image
-	imagePath, err := app.holdingScreen.Generate(connectURL, nextUp)
+	imagePath, err := app.holdingScreen.Generate(connectURL, nextUp, message)
 	if err != nil {
 		log.Printf("Failed to generate holding screen: %v", err)
 		return
 	}
 
-	// If BGM is active, don't update the image - it disrupts the audio
-	// The holding screen will be updated when BGM stops
+	// If BGM is active, update just the image while keeping audio playing
 	if app.bgmActive {
-		log.Println("Skipping holding screen update while BGM is playing")
+		if err := app.mpv.UpdateBGMImage(imagePath); err != nil {
+			log.Printf("Failed to update BGM image: %v", err)
+		} else {
+			log.Println("Holding screen updated while BGM playing")
+		}
 		return
 	}
 
@@ -1607,10 +1745,13 @@ func (app *App) Run() {
 		mpvReady = true
 	}
 
-	// Show holding screen after HTTP server starts (avatar API needs to be available)
+	// Show holding screen and run initial diagnostics after HTTP server starts
 	go func() {
 		// Wait for HTTP server to be ready
 		time.Sleep(500 * time.Millisecond)
+
+		// Run initial diagnostics (port checks need server running)
+		app.refreshDiagnostics()
 
 		if !mpvReady {
 			return
@@ -1664,6 +1805,7 @@ func (app *App) Run() {
 	mux.HandleFunc("/api/library/search", app.handleLibrarySearch)
 	mux.HandleFunc("/api/library/stats", app.handleLibraryStats)
 	mux.HandleFunc("/api/library/popular", app.handleLibraryPopular)
+	mux.HandleFunc("/api/library/songs", app.handleLibrarySongsByIDs)
 	mux.HandleFunc("/api/library/history", app.handleLibraryHistory)
 
 	// YouTube search endpoint
@@ -1684,8 +1826,12 @@ func (app *App) Run() {
 	mux.HandleFunc("/api/admin/player", app.admin.Middleware(app.handlePlayer))
 	mux.HandleFunc("/api/admin/database", app.admin.Middleware(app.handleDatabase))
 	mux.HandleFunc("/api/admin/bgm", app.admin.Middleware(app.handleBGM))
+	mux.HandleFunc("/api/admin/holding-message", app.admin.Middleware(app.handleHoldingMessage))
 	mux.HandleFunc("/api/admin/icecast-streams", app.admin.Middleware(app.handleIcecastStreams))
 	mux.HandleFunc("/api/admin/browse-dirs", app.admin.Middleware(app.handleBrowseDirs))
+	mux.HandleFunc("/api/admin/diagnostics", app.admin.Middleware(app.handleDiagnostics))
+	mux.HandleFunc("/api/admin/mdns", app.admin.Middleware(app.handleMDNS))
+	mux.HandleFunc("/api/admin/mpv-check", app.admin.Middleware(app.handleMPVCheck))
 	mux.HandleFunc("/api/connect-url", app.handleConnectURL) // Public - returns selected connection URL
 
 	// Avatar API endpoints
@@ -1756,6 +1902,12 @@ func (app *App) Run() {
 
 // Shutdown gracefully shuts down the application
 func (app *App) Shutdown() {
+	// Stop mDNS server first
+	if app.mdnsServer != nil {
+		app.mdnsServer.Shutdown()
+		log.Println("mDNS server stopped")
+	}
+
 	app.mpv.Stop()
 	app.sessions.Close()
 	app.queue.Close()
@@ -2236,6 +2388,35 @@ func (app *App) handleLibraryPopular(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(songs)
 }
 
+// handleLibrarySongsByIDs handles GET /api/library/songs?ids=comma,separated,ids
+func (app *App) handleLibrarySongsByIDs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	idsParam := r.URL.Query().Get("ids")
+	if idsParam == "" {
+		json.NewEncoder(w).Encode([]models.LibrarySong{})
+		return
+	}
+
+	ids := strings.Split(idsParam, ",")
+	songs, err := app.library.GetSongsByIDs(ids)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	if songs == nil {
+		songs = []models.LibrarySong{}
+	}
+	json.NewEncoder(w).Encode(songs)
+}
+
 // handleSongSelection handles POST /api/library/select - logs when a user selects a song
 func (app *App) handleSongSelection(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -2579,6 +2760,10 @@ type SettingsPayload struct {
 	VideoPlayer   string `json:"video_player"`
 	DataDir       string `json:"data_dir"`
 
+	// Display settings
+	TargetDisplay  string `json:"target_display"`
+	AutoFullscreen bool   `json:"auto_fullscreen"`
+
 	// Feature toggles
 	PitchControlEnabled    bool `json:"pitch_control_enabled"`
 	TempoControlEnabled    bool `json:"tempo_control_enabled"`
@@ -2604,6 +2789,10 @@ func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			VideoPlayer:   app.config.VideoPlayer,
 			DataDir:       app.config.DataDir,
 
+			// Display settings
+			TargetDisplay:  app.config.TargetDisplay,
+			AutoFullscreen: app.config.AutoFullscreen,
+
 			// Feature toggles
 			PitchControlEnabled:    app.config.PitchControlEnabled,
 			TempoControlEnabled:    app.config.TempoControlEnabled,
@@ -2628,6 +2817,29 @@ func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			app.config.AdminPIN = settings.AdminPIN
 			log.Printf("Admin PIN changed - all non-local admin sessions have been invalidated")
 		}
+
+		// Update display settings immediately (no restart required)
+		app.config.TargetDisplay = settings.TargetDisplay
+		app.config.AutoFullscreen = settings.AutoFullscreen
+
+		// Update mpv controller's display settings so Restart Player uses them
+		newDisplaySettings := mpv.DisplaySettings{
+			TargetDisplay:  settings.TargetDisplay,
+			ScreenIndex:    -1, // Default to auto
+			AutoFullscreen: settings.AutoFullscreen,
+		}
+		// Resolve display name to screen index
+		if settings.TargetDisplay != "" {
+			displays := getConnectedDisplays()
+			for i, d := range displays {
+				if d.Name == settings.TargetDisplay {
+					newDisplaySettings.ScreenIndex = i
+					log.Printf("Display settings updated: resolved '%s' to screen index %d", settings.TargetDisplay, i)
+					break
+				}
+			}
+		}
+		app.mpv.SetDisplaySettings(newDisplaySettings)
 
 		// Update feature toggles immediately (no restart required)
 		app.config.PitchControlEnabled = settings.PitchControlEnabled
@@ -2663,6 +2875,10 @@ DATA_DIR=%s
 TLS_CERT=%s
 TLS_KEY=%s
 
+# Display Settings
+TARGET_DISPLAY=%s
+AUTO_FULLSCREEN=%s
+
 # Feature Toggles
 PITCH_CONTROL_ENABLED=%s
 TEMPO_CONTROL_ENABLED=%s
@@ -2671,6 +2887,7 @@ SCROLLING_TICKER_ENABLED=%s
 SINGER_NAME_OVERLAY=%s
 `, settings.HTTPSPort, settings.HTTPPort, settings.AdminPIN, settings.YouTubeAPIKey,
 			settings.VideoPlayer, settings.DataDir, app.config.CertFile, app.config.KeyFile,
+			settings.TargetDisplay, boolToEnv(settings.AutoFullscreen),
 			boolToEnv(settings.PitchControlEnabled), boolToEnv(settings.TempoControlEnabled),
 			boolToEnv(settings.FairRotationEnabled), boolToEnv(settings.ScrollingTickerEnabled),
 			boolToEnv(settings.SingerNameOverlay))
@@ -3015,7 +3232,14 @@ func (app *App) handleConnectURL(w http.ResponseWriter, r *http.Request) {
 }
 
 // autoDetectConnectURL finds the best connection URL
+// If mDNS is configured, returns the .local hostname instead of IP
 func (app *App) autoDetectConnectURL() string {
+	// Use mDNS hostname if configured and server is running
+	if app.config.MDNSHostname != "" && app.mdnsServer != nil {
+		return fmt.Sprintf("https://%s.local:%s", app.config.MDNSHostname, app.config.Port)
+	}
+
+	// Fallback to IP-based detection
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return fmt.Sprintf("https://localhost:%s", app.config.Port)
@@ -3049,6 +3273,99 @@ func (app *App) autoDetectConnectURL() string {
 	}
 
 	return fmt.Sprintf("https://localhost:%s", app.config.Port)
+}
+
+// handleMDNS handles GET/POST /api/admin/mdns
+// GET returns current mDNS settings
+// POST updates the mDNS hostname and restarts the service
+func (app *App) handleMDNS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case http.MethodGet:
+		// Return current mDNS settings
+		hostname := app.config.MDNSHostname
+		enabled := app.mdnsServer != nil
+		var mdnsURL string
+		if enabled && hostname != "" {
+			mdnsURL = fmt.Sprintf("https://%s.local:%s", hostname, app.config.Port)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"hostname": hostname,
+			"enabled":  enabled,
+			"url":      mdnsURL,
+		})
+
+	case http.MethodPost:
+		var req struct {
+			Hostname string `json:"hostname"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Validate hostname (alphanumeric and hyphens only, no leading/trailing hyphens)
+		hostname := strings.ToLower(strings.TrimSpace(req.Hostname))
+		if hostname != "" {
+			// Basic validation for mDNS hostname
+			for _, c := range hostname {
+				if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+					http.Error(w, `{"error":"hostname can only contain letters, numbers, and hyphens"}`, http.StatusBadRequest)
+					return
+				}
+			}
+			if strings.HasPrefix(hostname, "-") || strings.HasSuffix(hostname, "-") {
+				http.Error(w, `{"error":"hostname cannot start or end with a hyphen"}`, http.StatusBadRequest)
+				return
+			}
+		}
+
+		// Stop existing mDNS server if running
+		if app.mdnsServer != nil {
+			app.mdnsServer.Shutdown()
+			app.mdnsServer = nil
+			log.Println("mDNS server stopped for reconfiguration")
+		}
+
+		// Update config
+		app.config.MDNSHostname = hostname
+
+		// Start new mDNS server if hostname is set
+		if hostname != "" {
+			portNum, _ := strconv.Atoi(app.config.Port)
+			mdnsServer, err := zeroconf.Register(
+				hostname,
+				"_https._tcp",
+				"local.",
+				portNum,
+				[]string{"txtv=0", "lo=1", "path=/"},
+				nil,
+			)
+			if err != nil {
+				log.Printf("Failed to start mDNS server: %v", err)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"success": false,
+					"error":   err.Error(),
+				})
+				return
+			}
+			app.mdnsServer = mdnsServer
+			log.Printf("mDNS: Now advertising as %s.local:%d", hostname, portNum)
+		}
+
+		// Refresh holding screen to show new URL
+		app.showHoldingScreen()
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":  true,
+			"hostname": hostname,
+			"url":      fmt.Sprintf("https://%s.local:%s", hostname, app.config.Port),
+		})
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 // handlePlayer handles GET/POST /api/admin/player
@@ -3265,6 +3582,22 @@ func (app *App) handleBGM(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+// handleHoldingMessage handles GET /api/admin/holding-message - get current holding screen message
+func (app *App) handleHoldingMessage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	app.holdingMessageMu.RLock()
+	message := app.holdingMessage
+	app.holdingMessageMu.RUnlock()
+
+	json.NewEncoder(w).Encode(map[string]string{"message": message})
 }
 
 // handleIcecastStreams handles GET /api/admin/icecast-streams - returns popular Icecast music streams
@@ -3492,4 +3825,576 @@ func (app *App) handleBrowseDirs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+// refreshDiagnostics updates the cached diagnostics info
+func (app *App) refreshDiagnostics() {
+	app.diagnosticsMu.Lock()
+	defer app.diagnosticsMu.Unlock()
+
+	app.diagnostics.PortChecks = app.checkPorts()
+	app.diagnostics.Displays = getConnectedDisplays()
+	app.diagnostics.FirewallEnabled, app.diagnostics.FirewallStatus = checkFirewallStatus()
+
+	log.Printf("Diagnostics refreshed: %d ports checked, %d displays found",
+		len(app.diagnostics.PortChecks), len(app.diagnostics.Displays))
+}
+
+// getDiagnostics returns the cached diagnostics info
+func (app *App) getDiagnostics() DiagnosticsInfo {
+	app.diagnosticsMu.RLock()
+	defer app.diagnosticsMu.RUnlock()
+	return app.diagnostics
+}
+
+// handleDiagnostics handles GET/POST /api/admin/diagnostics
+func (app *App) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case http.MethodGet:
+		// Return cached diagnostics
+		json.NewEncoder(w).Encode(app.getDiagnostics())
+
+	case http.MethodPost:
+		// Refresh diagnostics and return updated data
+		app.refreshDiagnostics()
+		json.NewEncoder(w).Encode(app.getDiagnostics())
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// checkPorts checks if the server ports are accessible
+func (app *App) checkPorts() []PortCheck {
+	var checks []PortCheck
+
+	// Check HTTPS port
+	httpsPort := 8443 // Default
+	if app.config.Port != "" {
+		if p, err := strconv.Atoi(app.config.Port); err == nil {
+			httpsPort = p
+		}
+	}
+
+	checks = append(checks, checkPort(httpsPort, "tcp", "HTTPS Server"))
+
+	// Check HTTP redirect port
+	httpPort := 8080 // Default
+	if app.config.HTTPPort != "" {
+		if p, err := strconv.Atoi(app.config.HTTPPort); err == nil {
+			httpPort = p
+		}
+	}
+
+	checks = append(checks, checkPort(httpPort, "tcp", "HTTP Redirect"))
+
+	return checks
+}
+
+// checkPort attempts to connect to a port
+func checkPort(port int, protocol, description string) PortCheck {
+	check := PortCheck{
+		Port:        port,
+		Protocol:    protocol,
+		Description: description,
+	}
+
+	// Try to connect to localhost
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.DialTimeout(protocol, addr, 2*time.Second)
+	if err != nil {
+		check.Status = "closed"
+		check.Error = err.Error()
+	} else {
+		check.Status = "open"
+		conn.Close()
+	}
+
+	return check
+}
+
+// getConnectedDisplays returns info about connected displays
+func getConnectedDisplays() []DisplayInfo {
+	var displays []DisplayInfo
+
+	switch runtime.GOOS {
+	case "darwin":
+		displays = getDisplaysMacOS()
+	case "linux":
+		displays = getDisplaysLinux()
+	case "windows":
+		displays = getDisplaysWindows()
+	}
+
+	return displays
+}
+
+// getDisplaysMacOS gets display info on macOS using system_profiler
+func getDisplaysMacOS() []DisplayInfo {
+	var displays []DisplayInfo
+
+	cmd := exec.Command("system_profiler", "SPDisplaysDataType", "-json")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("Failed to get display info: %v", err)
+		return displays
+	}
+
+	// Parse JSON output
+	var data map[string]interface{}
+	if err := json.Unmarshal(output, &data); err != nil {
+		log.Printf("Failed to parse display info: %v", err)
+		return displays
+	}
+
+	// Navigate to displays
+	if spDisplays, ok := data["SPDisplaysDataType"].([]interface{}); ok {
+		for _, gpu := range spDisplays {
+			if gpuMap, ok := gpu.(map[string]interface{}); ok {
+				// Get displays connected to this GPU
+				if ndrvs, ok := gpuMap["spdisplays_ndrvs"].([]interface{}); ok {
+					for i, disp := range ndrvs {
+						if dispMap, ok := disp.(map[string]interface{}); ok {
+							display := DisplayInfo{}
+
+							if name, ok := dispMap["_name"].(string); ok {
+								display.Name = name
+							}
+
+							// Get resolution
+							if res, ok := dispMap["_spdisplays_resolution"].(string); ok {
+								display.Resolution = res
+							} else if res, ok := dispMap["spdisplays_resolution"].(string); ok {
+								display.Resolution = res
+							}
+
+							// Determine connection type
+							if conn, ok := dispMap["spdisplays_connection_type"].(string); ok {
+								display.Connection = conn
+							}
+
+							// Check if it's the main display
+							if main, ok := dispMap["spdisplays_main"].(string); ok && main == "spdisplays_yes" {
+								display.Main = true
+							}
+
+							// Determine type
+							if dispMap["spdisplays_display_type"] != nil {
+								display.Type = "external"
+							} else {
+								display.Type = "built-in"
+							}
+
+							// Only add if we have a name
+							if display.Name != "" || i == 0 {
+								if display.Name == "" {
+									display.Name = fmt.Sprintf("Display %d", i+1)
+								}
+								displays = append(displays, display)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return displays
+}
+
+// getDisplaysLinux gets display info on Linux using xrandr
+func getDisplaysLinux() []DisplayInfo {
+	var displays []DisplayInfo
+
+	cmd := exec.Command("xrandr", "--query")
+	output, err := cmd.Output()
+	if err != nil {
+		return displays
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, " connected") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				display := DisplayInfo{
+					Name:       parts[0],
+					Connection: parts[0],
+				}
+
+				// Look for resolution (e.g., "1920x1080+0+0")
+				for _, part := range parts {
+					if strings.Contains(part, "x") && strings.Contains(part, "+") {
+						resParts := strings.Split(part, "+")
+						if len(resParts) > 0 {
+							display.Resolution = resParts[0]
+						}
+						break
+					}
+				}
+
+				if strings.Contains(line, "primary") {
+					display.Main = true
+				}
+
+				displays = append(displays, display)
+			}
+		}
+	}
+
+	return displays
+}
+
+// getDisplaysWindows gets display info on Windows using PowerShell
+func getDisplaysWindows() []DisplayInfo {
+	var displays []DisplayInfo
+
+	// Use PowerShell to query WMI for monitor information
+	psScript := `
+Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams -ErrorAction SilentlyContinue | ForEach-Object {
+    $id = $_.InstanceName
+    $connInfo = Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorConnectionParams -ErrorAction SilentlyContinue | Where-Object { $_.InstanceName -eq $id }
+    $connType = if ($connInfo) { $connInfo.VideoOutputTechnology } else { -1 }
+    [PSCustomObject]@{
+        Name = $_.InstanceName
+        Active = $_.Active
+        MaxHorizontalImageSize = $_.MaxHorizontalImageSize
+        MaxVerticalImageSize = $_.MaxVerticalImageSize
+        ConnectionType = $connType
+    }
+} | ConvertTo-Json -Compress
+`
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", psScript)
+	output, err := cmd.Output()
+	if err != nil {
+		// Fallback: try to get basic display info from Win32_VideoController
+		return getDisplaysWindowsFallback()
+	}
+
+	// Parse JSON output
+	outputStr := strings.TrimSpace(string(output))
+	if outputStr == "" || outputStr == "null" {
+		return getDisplaysWindowsFallback()
+	}
+
+	// Handle single object vs array
+	var monitors []map[string]interface{}
+	if strings.HasPrefix(outputStr, "[") {
+		if err := json.Unmarshal([]byte(outputStr), &monitors); err != nil {
+			return getDisplaysWindowsFallback()
+		}
+	} else {
+		var single map[string]interface{}
+		if err := json.Unmarshal([]byte(outputStr), &single); err != nil {
+			return getDisplaysWindowsFallback()
+		}
+		monitors = []map[string]interface{}{single}
+	}
+
+	for i, mon := range monitors {
+		display := DisplayInfo{
+			Name: fmt.Sprintf("Display %d", i+1),
+		}
+
+		if name, ok := mon["Name"].(string); ok && name != "" {
+			// Clean up the instance name
+			parts := strings.Split(name, "\\")
+			if len(parts) > 1 {
+				display.Name = parts[1]
+			}
+		}
+
+		// Calculate resolution from physical size (approximate)
+		if h, ok := mon["MaxHorizontalImageSize"].(float64); ok {
+			if v, ok := mon["MaxVerticalImageSize"].(float64); ok {
+				if h > 0 && v > 0 {
+					display.Resolution = fmt.Sprintf("%dcm x %dcm", int(h), int(v))
+				}
+			}
+		}
+
+		// Determine connection type
+		if connType, ok := mon["ConnectionType"].(float64); ok {
+			switch int(connType) {
+			case 0:
+				display.Connection = "VGA"
+			case 4:
+				display.Connection = "DVI"
+			case 5:
+				display.Connection = "HDMI"
+			case 10:
+				display.Connection = "DisplayPort"
+			case -1:
+				display.Connection = "Internal"
+				display.Type = "built-in"
+			default:
+				display.Connection = "Other"
+			}
+		}
+
+		if display.Type == "" {
+			display.Type = "external"
+		}
+
+		// First display is typically the main one
+		if i == 0 {
+			display.Main = true
+		}
+
+		displays = append(displays, display)
+	}
+
+	return displays
+}
+
+// getDisplaysWindowsFallback uses Win32_VideoController as fallback
+func getDisplaysWindowsFallback() []DisplayInfo {
+	var displays []DisplayInfo
+
+	psScript := `Get-CimInstance Win32_VideoController | Select-Object Name, CurrentHorizontalResolution, CurrentVerticalResolution | ConvertTo-Json -Compress`
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", psScript)
+	output, err := cmd.Output()
+	if err != nil {
+		return displays
+	}
+
+	outputStr := strings.TrimSpace(string(output))
+	if outputStr == "" || outputStr == "null" {
+		return displays
+	}
+
+	var controllers []map[string]interface{}
+	if strings.HasPrefix(outputStr, "[") {
+		json.Unmarshal([]byte(outputStr), &controllers)
+	} else {
+		var single map[string]interface{}
+		if err := json.Unmarshal([]byte(outputStr), &single); err == nil {
+			controllers = []map[string]interface{}{single}
+		}
+	}
+
+	for i, ctrl := range controllers {
+		display := DisplayInfo{
+			Name: fmt.Sprintf("Display %d", i+1),
+			Type: "external",
+		}
+
+		if name, ok := ctrl["Name"].(string); ok {
+			display.Name = name
+		}
+
+		if h, ok := ctrl["CurrentHorizontalResolution"].(float64); ok {
+			if v, ok := ctrl["CurrentVerticalResolution"].(float64); ok {
+				display.Resolution = fmt.Sprintf("%d x %d", int(h), int(v))
+			}
+		}
+
+		if i == 0 {
+			display.Main = true
+		}
+
+		displays = append(displays, display)
+	}
+
+	return displays
+}
+
+// checkFirewallStatus checks the system firewall status
+func checkFirewallStatus() (enabled bool, status string) {
+	switch runtime.GOOS {
+	case "darwin":
+		// macOS: check Application Firewall status
+		cmd := exec.Command("/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
+		output, err := cmd.Output()
+		if err != nil {
+			return false, "Unable to check firewall status"
+		}
+
+		outputStr := string(output)
+		if strings.Contains(outputStr, "enabled") {
+			return true, "Application Firewall is enabled"
+		}
+		return false, "Application Firewall is disabled"
+
+	case "linux":
+		// Linux: check ufw or iptables
+		cmd := exec.Command("ufw", "status")
+		output, err := cmd.Output()
+		if err == nil {
+			if strings.Contains(string(output), "active") {
+				return true, "UFW firewall is active"
+			}
+			return false, "UFW firewall is inactive"
+		}
+
+		// Try iptables
+		cmd = exec.Command("iptables", "-L", "-n")
+		_, err = cmd.Output()
+		if err == nil {
+			return true, "iptables is configured"
+		}
+		return false, "Unable to determine firewall status"
+
+	case "windows":
+		// Windows: check Windows Firewall status using netsh
+		cmd := exec.Command("netsh", "advfirewall", "show", "allprofiles", "state")
+		output, err := cmd.Output()
+		if err != nil {
+			return false, "Unable to check firewall status"
+		}
+
+		outputStr := string(output)
+		if strings.Contains(outputStr, "ON") {
+			return true, "Windows Firewall is enabled"
+		}
+		return false, "Windows Firewall is disabled"
+	}
+
+	return false, "Firewall check not supported on this OS"
+}
+
+// MPVStatus represents the status of the mpv installation
+type MPVStatus struct {
+	Installed       bool   `json:"installed"`
+	Version         string `json:"version,omitempty"`
+	Path            string `json:"path,omitempty"`
+	Error           string `json:"error,omitempty"`
+	Platform        string `json:"platform"`
+	InstallCommand  string `json:"install_command"`
+	InstallMethod   string `json:"install_method"`
+	DownloadURL     string `json:"download_url"`
+	AlternativeNote string `json:"alternative_note,omitempty"`
+}
+
+// handleMPVCheck handles GET /api/admin/mpv-check
+// Returns the status of the mpv installation and platform-specific install instructions
+func (app *App) handleMPVCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	status := MPVStatus{
+		Platform: runtime.GOOS,
+	}
+
+	// Set platform-specific installation instructions
+	switch runtime.GOOS {
+	case "darwin":
+		status.InstallCommand = "brew install mpv"
+		status.InstallMethod = "Homebrew"
+		status.DownloadURL = "https://mpv.io/installation/"
+		status.AlternativeNote = "If you don't have Homebrew, install it from https://brew.sh first, or download mpv directly from the website."
+	case "linux":
+		// Try to detect distro
+		distro := detectLinuxDistro()
+		switch distro {
+		case "debian", "ubuntu":
+			status.InstallCommand = "sudo apt install mpv"
+			status.InstallMethod = "APT"
+		case "fedora":
+			status.InstallCommand = "sudo dnf install mpv"
+			status.InstallMethod = "DNF"
+		case "arch":
+			status.InstallCommand = "sudo pacman -S mpv"
+			status.InstallMethod = "Pacman"
+		default:
+			status.InstallCommand = "sudo apt install mpv"
+			status.InstallMethod = "Package Manager"
+			status.AlternativeNote = "Command shown is for Debian/Ubuntu. Use your distro's package manager."
+		}
+		status.DownloadURL = "https://mpv.io/installation/"
+	case "windows":
+		status.InstallCommand = "choco install mpv"
+		status.InstallMethod = "Chocolatey"
+		status.DownloadURL = "https://mpv.io/installation/"
+		status.AlternativeNote = "You can also download mpv directly from the website and add it to your PATH."
+	default:
+		status.InstallCommand = ""
+		status.InstallMethod = "Manual"
+		status.DownloadURL = "https://mpv.io/installation/"
+	}
+
+	// Check if mpv is installed
+	executable := app.config.VideoPlayer
+	if executable == "" {
+		executable = "mpv"
+	}
+
+	// Try to find mpv in PATH or at the specified path
+	mpvPath, err := exec.LookPath(executable)
+	if err != nil {
+		status.Installed = false
+		status.Error = fmt.Sprintf("mpv not found: %v", err)
+		json.NewEncoder(w).Encode(status)
+		return
+	}
+
+	status.Path = mpvPath
+
+	// Get mpv version
+	cmd := exec.Command(mpvPath, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		status.Installed = false
+		status.Error = fmt.Sprintf("mpv found but failed to get version: %v", err)
+		json.NewEncoder(w).Encode(status)
+		return
+	}
+
+	// Parse version from output (first line usually contains "mpv X.X.X ...")
+	lines := strings.Split(string(output), "\n")
+	if len(lines) > 0 {
+		// Extract version from first line
+		firstLine := strings.TrimSpace(lines[0])
+		if strings.HasPrefix(firstLine, "mpv") {
+			status.Version = firstLine
+		} else {
+			status.Version = "unknown"
+		}
+	}
+
+	status.Installed = true
+	json.NewEncoder(w).Encode(status)
+}
+
+// detectLinuxDistro attempts to detect the Linux distribution
+func detectLinuxDistro() string {
+	// Try /etc/os-release first (most modern distros)
+	data, err := os.ReadFile("/etc/os-release")
+	if err == nil {
+		content := strings.ToLower(string(data))
+		if strings.Contains(content, "ubuntu") {
+			return "ubuntu"
+		}
+		if strings.Contains(content, "debian") {
+			return "debian"
+		}
+		if strings.Contains(content, "fedora") {
+			return "fedora"
+		}
+		if strings.Contains(content, "arch") {
+			return "arch"
+		}
+		if strings.Contains(content, "centos") || strings.Contains(content, "rhel") {
+			return "fedora" // Uses dnf/yum
+		}
+	}
+
+	// Fallback: check for package managers
+	if _, err := exec.LookPath("apt"); err == nil {
+		return "debian"
+	}
+	if _, err := exec.LookPath("dnf"); err == nil {
+		return "fedora"
+	}
+	if _, err := exec.LookPath("pacman"); err == nil {
+		return "arch"
+	}
+
+	return "unknown"
 }

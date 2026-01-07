@@ -18,6 +18,7 @@ type Manager struct {
 	tokens        map[string]tokenInfo // token -> info
 	mu            sync.RWMutex
 	tokenExpiry   time.Duration
+	onAdminAuth   func(martynKey string) // Callback when user authenticates as admin
 }
 
 type tokenInfo struct {
@@ -41,6 +42,11 @@ func NewManager(pin string) *Manager {
 // IsLocalhostOnly returns true if admin access is restricted to localhost
 func (m *Manager) IsLocalhostOnly() bool {
 	return m.localhostOnly
+}
+
+// SetOnAdminAuth sets a callback that's called when a user authenticates as admin
+func (m *Manager) SetOnAdminAuth(callback func(martynKey string)) {
+	m.onAdminAuth = callback
 }
 
 // GetPIN returns the admin PIN (for display on startup)
@@ -243,9 +249,16 @@ func (m *Manager) Middleware(next http.HandlerFunc) http.HandlerFunc {
 func (m *Manager) HandleAuth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	// Get martyn_key from query string (works for both GET and POST)
+	martynKey := r.URL.Query().Get("martyn_key")
+
 	// If local, auto-authenticate
 	if IsLocalRequest(r) {
-		token := m.GenerateToken("local")
+		token := m.GenerateToken(martynKey)
+		// Mark session as admin if martyn_key provided
+		if martynKey != "" && m.onAdminAuth != nil {
+			m.onAdminAuth(martynKey)
+		}
 		json.NewEncoder(w).Encode(AuthResponse{
 			Success: true,
 			Token:   token,
@@ -297,7 +310,17 @@ func (m *Manager) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := m.GenerateToken(req.MartynKey)
+	// Use martyn_key from body if provided, otherwise from query
+	if req.MartynKey != "" {
+		martynKey = req.MartynKey
+	}
+
+	// Mark session as admin
+	if martynKey != "" && m.onAdminAuth != nil {
+		m.onAdminAuth(martynKey)
+	}
+
+	token := m.GenerateToken(martynKey)
 	json.NewEncoder(w).Encode(AuthResponse{
 		Success: true,
 		Token:   token,

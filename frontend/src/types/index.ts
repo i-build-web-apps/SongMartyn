@@ -26,6 +26,8 @@ export interface Song {
   vocal_path?: string;
   instr_path?: string;
   vocal_assist: VocalAssistLevel;
+  key_change: number;      // Semitones (-12 to +12)
+  tempo_change: number;    // Speed multiplier (0.5 to 2.0, 1.0 = normal)
   added_by: string;
   added_at: string;
 }
@@ -59,6 +61,7 @@ export interface Session {
   avatar_config?: AvatarConfig;
   vocal_assist: VocalAssistLevel;
   search_history: string[];
+  favorites: string[];  // Array of favorite song IDs
   current_song_id?: string;
   connected_at: string;
   last_seen_at: string;
@@ -77,6 +80,9 @@ export interface ClientInfo {
   martyn_key: string;
   display_name: string;
   device_name: string;
+  device_type: string;    // mobile, tablet, desktop
+  device_os: string;      // iOS, Android, Windows, macOS, Linux
+  device_browser: string; // Safari, Chrome, Firefox, etc.
   ip_address: string;
   is_admin: boolean;
   is_online: boolean;
@@ -97,6 +103,7 @@ export interface PlayerState {
   vocal_assist: VocalAssistLevel;
   bgm_active: boolean;
   bgm_enabled: boolean;
+  idle: boolean;  // Showing holding screen (not playing a song)
 }
 
 // BGM (Background Music) settings
@@ -160,6 +167,10 @@ export type MessageType =
   | 'seek'
   | 'vocal_assist'
   | 'volume'
+  | 'key_change'
+  | 'tempo_change'
+  | 'add_favorite'
+  | 'remove_favorite'
   | 'set_display_name'
   | 'autoplay'
   | 'admin_set_admin'
@@ -168,9 +179,12 @@ export type MessageType =
   | 'admin_unblock'
   | 'admin_set_afk'
   | 'admin_play_next'
+  | 'admin_start_now'
   | 'admin_stop'
   | 'admin_set_name'
   | 'admin_set_name_lock'
+  | 'admin_toggle_bgm'
+  | 'admin_set_message'
   | 'welcome'
   | 'state_update'
   | 'search_result'

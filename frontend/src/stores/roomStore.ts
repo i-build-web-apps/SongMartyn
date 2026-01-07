@@ -66,6 +66,7 @@ const initialPlayerState: PlayerState = {
   vocal_assist: 'OFF',
   bgm_active: false,
   bgm_enabled: false,
+  idle: true,
 };
 
 const initialQueueState: QueueState = {
@@ -106,7 +107,7 @@ export const useRoomStore = create<RoomStore>((set) => ({
 
   updateState: (state) =>
     set((currentState) => {
-      // Sync the user's session with server state (e.g., when admin sets AFK)
+      // Sync the user's session with server state (e.g., when admin sets AFK, favorites change)
       let updatedSession = currentState.session;
       if (currentState.session) {
         const serverSession = state.sessions.find(
@@ -117,6 +118,7 @@ export const useRoomStore = create<RoomStore>((set) => ({
             ...currentState.session,
             is_afk: serverSession.is_afk,
             is_admin: serverSession.is_admin,
+            favorites: serverSession.favorites ?? currentState.session.favorites,
           };
         }
       }
@@ -173,6 +175,15 @@ export const selectCurrentSong = (state: RoomStore): Song | null =>
 export const selectIsPlaying = (state: RoomStore): boolean =>
   state.player.is_playing;
 
+export const selectIdle = (state: RoomStore): boolean =>
+  state.player.idle;
+
+export const selectBgmActive = (state: RoomStore): boolean =>
+  state.player.bgm_active;
+
+export const selectBgmEnabled = (state: RoomStore): boolean =>
+  state.player.bgm_enabled;
+
 export const selectVocalAssist = (state: RoomStore): VocalAssistLevel =>
   state.player.vocal_assist;
 
@@ -195,3 +206,9 @@ export const selectActiveSessions = (state: RoomStore): Session[] =>
 
 export const selectNotifications = (state: RoomStore): Notification[] =>
   state.notifications;
+
+// Stable empty array to prevent infinite re-renders in selectors
+const EMPTY_FAVORITES: string[] = [];
+
+export const selectFavorites = (state: RoomStore): string[] =>
+  state.session?.favorites ?? EMPTY_FAVORITES;
