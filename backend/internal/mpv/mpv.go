@@ -681,20 +681,30 @@ func (c *Controller) LoadCDG(cdgPath, audioPath string) error {
 	// Reset loop settings from image display
 	c.conn.Set("loop-file", "no")
 
-	// Load CDG as video with external audio file
-	// Note: audio-files (plural) is the correct mpv option name
-	// Quote the audio path to handle spaces in filenames
-	_, err := c.conn.Call("loadfile", cdgPath,
-		"replace",
-		fmt.Sprintf("audio-files=\"%s\"", audioPath),
-	)
+	// Load CDG file first (video track)
+	_, err := c.conn.Call("loadfile", cdgPath, "replace")
+	if err != nil {
+		c.mu.Unlock()
+		return fmt.Errorf("failed to load CDG: %w", err)
+	}
+	c.mu.Unlock()
+
+	// Wait for CDG to start loading
+	time.Sleep(200 * time.Millisecond)
+
+	// Add audio track separately - this handles paths with spaces correctly
+	c.mu.Lock()
+	if c.conn != nil {
+		_, err = c.conn.Call("audio-add", audioPath, "select")
+		if err != nil {
+			log.Printf("[MPV] audio-add failed for CDG: %v", err)
+		}
+	}
 	c.mu.Unlock()
 
 	// Start playback monitor to detect song end
-	if err == nil {
-		c.StartPlaybackMonitor()
-	}
-	return err
+	c.StartPlaybackMonitor()
+	return nil
 }
 
 // SetVolume sets the playback volume (0-100)
