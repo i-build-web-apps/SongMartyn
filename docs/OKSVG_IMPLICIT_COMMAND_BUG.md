@@ -125,6 +125,26 @@ The head path renders as a massive blob covering ~86% of the canvas, completely 
 ### After Fix (Explicit Commands)
 The head path renders correctly as a head/body shape covering ~20-30% of the canvas, with the background circle visible behind it.
 
+## Testing Rig
+
+We built a visual comparison tool to debug this issue, available at:
+
+```
+https://localhost:8443/avatar-debug
+```
+
+This page renders avatars side-by-side:
+- **Left**: SVG rendered by the browser (correct reference)
+- **Right**: PNG rendered by oksvg/rasterx
+
+Features:
+- Generate random avatars or view all 16 base designs
+- View raw SVG and normalized SVG for each avatar
+- Adjustable render size (64px - 512px)
+- Immediate visual comparison to spot rendering differences
+
+Source: [SongMartyn](https://github.com/i-build-web-apps/SongMartyn) - a self-hosted karaoke system using Multiavatar-style SVG avatars.
+
 ## Environment
 
 - oksvg version: latest (tested January 2025)
