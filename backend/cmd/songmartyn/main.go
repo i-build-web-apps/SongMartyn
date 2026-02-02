@@ -454,12 +454,12 @@ func NewApp(config Config) (*App, error) {
 	if config.MDNSHostname != "" {
 		portNum, _ := strconv.Atoi(config.Port)
 		mdnsServer, err := zeroconf.Register(
-			config.MDNSHostname,       // Instance name
-			"_https._tcp",             // Service type
-			"local.",                  // Domain
-			portNum,                   // Port
-			[]string{"txtv=0", "lo=1", "path=/"},  // TXT records
-			nil,                       // Interfaces (nil = all)
+			config.MDNSHostname,                  // Instance name
+			"_https._tcp",                        // Service type
+			"local.",                             // Domain
+			portNum,                              // Port
+			[]string{"txtv=0", "lo=1", "path=/"}, // TXT records
+			nil,                                  // Interfaces (nil = all)
 		)
 		if err != nil {
 			log.Printf("Warning: Failed to start mDNS server: %v", err)
@@ -1816,13 +1816,13 @@ func (app *App) Run() {
 	mux.HandleFunc("/api/features", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"youtube_enabled":         app.config.YouTubeAPIKey != "",
-			"admin_localhost_only":    app.admin.IsLocalhostOnly(),
-			"pitch_control_enabled":   app.config.PitchControlEnabled,
-			"tempo_control_enabled":   app.config.TempoControlEnabled,
-			"fair_rotation_enabled":   app.config.FairRotationEnabled,
+			"youtube_enabled":          app.config.YouTubeAPIKey != "",
+			"admin_localhost_only":     app.admin.IsLocalhostOnly(),
+			"pitch_control_enabled":    app.config.PitchControlEnabled,
+			"tempo_control_enabled":    app.config.TempoControlEnabled,
+			"fair_rotation_enabled":    app.config.FairRotationEnabled,
 			"scrolling_ticker_enabled": app.config.ScrollingTickerEnabled,
-			"singer_name_overlay":     app.config.SingerNameOverlay,
+			"singer_name_overlay":      app.config.SingerNameOverlay,
 		})
 	})
 
@@ -2327,7 +2327,7 @@ func (app *App) handleLibraryLocationAction(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":     "ok",
+			"status":      "ok",
 			"songs_found": count,
 		})
 
@@ -2953,18 +2953,18 @@ SINGER_NAME_OVERLAY=%s
 
 // SystemInfo represents system information
 type SystemInfo struct {
-	OS           string  `json:"os"`
-	Arch         string  `json:"arch"`
-	Hostname     string  `json:"hostname"`
-	CPUCount     int     `json:"cpu_count"`
-	MemoryTotal  uint64  `json:"memory_total"`
-	MemoryFree   uint64  `json:"memory_free"`
-	MemoryUsed   uint64  `json:"memory_used"`
-	DiskTotal    uint64  `json:"disk_total"`
-	DiskFree     uint64  `json:"disk_free"`
-	DiskUsed     uint64  `json:"disk_used"`
-	GoVersion    string  `json:"go_version"`
-	ServerUptime string  `json:"server_uptime"`
+	OS           string   `json:"os"`
+	Arch         string   `json:"arch"`
+	Hostname     string   `json:"hostname"`
+	CPUCount     int      `json:"cpu_count"`
+	MemoryTotal  uint64   `json:"memory_total"`
+	MemoryFree   uint64   `json:"memory_free"`
+	MemoryUsed   uint64   `json:"memory_used"`
+	DiskTotal    uint64   `json:"disk_total"`
+	DiskFree     uint64   `json:"disk_free"`
+	DiskUsed     uint64   `json:"disk_used"`
+	GoVersion    string   `json:"go_version"`
+	ServerUptime string   `json:"server_uptime"`
 	NetworkAddrs []string `json:"network_addrs"`
 }
 
@@ -3069,16 +3069,16 @@ func getDiskInfo(path string) (total, free, used uint64) {
 
 // NetworkInterface represents a network interface with its addresses
 type NetworkInterface struct {
-	Name         string   `json:"name"`
-	DisplayName  string   `json:"display_name"`
-	Type         string   `json:"type"`
-	MacAddress   string   `json:"mac_address"`
-	IPv4         []string `json:"ipv4"`
-	IPv6         []string `json:"ipv6"`
-	IsUp         bool     `json:"is_up"`
-	IsLoopback   bool     `json:"is_loopback"`
-	IsWireless   bool     `json:"is_wireless"`
-	ConnectURLs  []string `json:"connect_urls"`
+	Name        string   `json:"name"`
+	DisplayName string   `json:"display_name"`
+	Type        string   `json:"type"`
+	MacAddress  string   `json:"mac_address"`
+	IPv4        []string `json:"ipv4"`
+	IPv6        []string `json:"ipv6"`
+	IsUp        bool     `json:"is_up"`
+	IsLoopback  bool     `json:"is_loopback"`
+	IsWireless  bool     `json:"is_wireless"`
+	ConnectURLs []string `json:"connect_urls"`
 }
 
 // handleNetworkEnumeration handles GET /api/admin/networks
@@ -3100,12 +3100,12 @@ func (app *App) handleNetworkEnumeration(w http.ResponseWriter, r *http.Request)
 	var result []NetworkInterface
 	for _, iface := range interfaces {
 		ni := NetworkInterface{
-			Name:       iface.Name,
-			MacAddress: iface.HardwareAddr.String(),
-			IsUp:       iface.Flags&net.FlagUp != 0,
-			IsLoopback: iface.Flags&net.FlagLoopback != 0,
-			IPv4:       []string{},
-			IPv6:       []string{},
+			Name:        iface.Name,
+			MacAddress:  iface.HardwareAddr.String(),
+			IsUp:        iface.Flags&net.FlagUp != 0,
+			IsLoopback:  iface.Flags&net.FlagLoopback != 0,
+			IPv4:        []string{},
+			IPv6:        []string{},
 			ConnectURLs: []string{},
 		}
 
@@ -3268,44 +3268,42 @@ func (app *App) handleConnectURL(w http.ResponseWriter, r *http.Request) {
 }
 
 // autoDetectConnectURL finds the best connection URL
-// If mDNS is configured, returns the .local hostname instead of IP
+// Prefers LAN IP (most reliable), falls back to mDNS .local, then localhost
 func (app *App) autoDetectConnectURL() string {
-	// Use mDNS hostname if configured and server is running
+	// Prefer LAN IP — works reliably without mDNS/DNS dependencies
+	interfaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range interfaces {
+			// Skip loopback and down interfaces
+			if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+				continue
+			}
+
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+
+			for _, addr := range addrs {
+				var ip net.IP
+				switch v := addr.(type) {
+				case *net.IPNet:
+					ip = v.IP
+				case *net.IPAddr:
+					ip = v.IP
+				}
+
+				// Only IPv4, non-loopback
+				if ip != nil && ip.To4() != nil && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+					return fmt.Sprintf("https://%s:%s", ip.String(), app.config.Port)
+				}
+			}
+		}
+	}
+
+	// Fallback to mDNS hostname if no LAN IP found
 	if app.config.MDNSHostname != "" && app.mdnsServer != nil {
 		return fmt.Sprintf("https://%s.local:%s", app.config.MDNSHostname, app.config.Port)
-	}
-
-	// Fallback to IP-based detection
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return fmt.Sprintf("https://localhost:%s", app.config.Port)
-	}
-
-	for _, iface := range interfaces {
-		// Skip loopback and down interfaces
-		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
-			continue
-		}
-
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-
-			// Only IPv4, non-loopback
-			if ip != nil && ip.To4() != nil && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
-				return fmt.Sprintf("https://%s:%s", ip.String(), app.config.Port)
-			}
-		}
 	}
 
 	return fmt.Sprintf("https://localhost:%s", app.config.Port)

@@ -214,13 +214,25 @@ func (m *Manager) ScanLocation(id int64) (int, error) {
 		return 0, err
 	}
 
+	log.Printf("[Library Scan] Starting scan of: %s", path)
+	scanStart := time.Now()
+
 	// First pass: collect all files by directory
 	dirFiles := make(map[string][]string)
+	totalFiles := 0
+	dirsVisited := 0
+	lastProgress := time.Now()
 	err = filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip errors
 		}
 		if info.IsDir() {
+			dirsVisited++
+			// Log progress every 2 seconds during walk
+			if time.Since(lastProgress) > 2*time.Second {
+				log.Printf("[Library Scan] Discovering files... %d files found in %d directories so far", totalFiles, dirsVisited)
+				lastProgress = time.Now()
+			}
 			return nil
 		}
 
@@ -231,6 +243,7 @@ func (m *Manager) ScanLocation(id int64) (int, error) {
 
 		dir := filepath.Dir(filePath)
 		dirFiles[dir] = append(dirFiles[dir], filePath)
+		totalFiles++
 		return nil
 	})
 
@@ -238,11 +251,27 @@ func (m *Manager) ScanLocation(id int64) (int, error) {
 		return 0, err
 	}
 
+	log.Printf("[Library Scan] Discovery complete: %d supported files in %d directories (took %s)", totalFiles, len(dirFiles), time.Since(scanStart).Round(time.Millisecond))
+
+	// Use a transaction for all inserts — SQLite is extremely slow without one
+	tx, err := m.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	count := 0
+	processedDirs := 0
+	lastProgress = time.Now()
 	// Process each directory
 	for _, files := range dirFiles {
+		processedDirs++
+		if time.Since(lastProgress) > 2*time.Second {
+			log.Printf("[Library Scan] Processing songs... %d/%d directories, %d songs added so far", processedDirs, len(dirFiles), count)
+			lastProgress = time.Now()
+		}
 		// Look for CDG files and their paired audio
-		cdgFiles := make(map[string]string) // base name -> cdg path
+		cdgFiles := make(map[string]string)   // base name -> cdg path
 		audioFiles := make(map[string]string) // base name -> audio path
 		otherFiles := []string{}
 
@@ -282,7 +311,7 @@ func (m *Manager) ScanLocation(id int64) (int, error) {
 				songID := hex.EncodeToString(hash[:])
 				title, artist := parseFilename(cdgPath)
 
-				_, err = m.db.Exec(`
+				_, err = tx.Exec(`
 					INSERT INTO library_songs (id, title, artist, file_path, cdg_path, audio_path, library_id)
 					VALUES (?, ?, ?, ?, ?, ?, ?)
 					ON CONFLICT(id) DO UPDATE SET
@@ -296,7 +325,6 @@ func (m *Manager) ScanLocation(id int64) (int, error) {
 					log.Printf("Error adding CDG song %s: %v", cdgPath, err)
 				} else {
 					count++
-					log.Printf("Added CDG+Audio pair: %s", base)
 				}
 			}
 		}
@@ -307,7 +335,7 @@ func (m *Manager) ScanLocation(id int64) (int, error) {
 			songID := hex.EncodeToString(hash[:])
 			title, artist := parseFilename(audioPath)
 
-			_, err = m.db.Exec(`
+			_, err = tx.Exec(`
 				INSERT INTO library_songs (id, title, artist, file_path, library_id)
 				VALUES (?, ?, ?, ?, ?)
 				ON CONFLICT(id) DO UPDATE SET
@@ -328,7 +356,7 @@ func (m *Manager) ScanLocation(id int64) (int, error) {
 			songID := hex.EncodeToString(hash[:])
 			title, artist := parseFilename(filePath)
 
-			_, err = m.db.Exec(`
+			_, err = tx.Exec(`
 				INSERT INTO library_songs (id, title, artist, file_path, library_id)
 				VALUES (?, ?, ?, ?, ?)
 				ON CONFLICT(id) DO UPDATE SET
@@ -345,13 +373,19 @@ func (m *Manager) ScanLocation(id int64) (int, error) {
 	}
 
 	// Update location stats
-	m.db.Exec(`
+	tx.Exec(`
 		UPDATE library_locations
 		SET song_count = (SELECT COUNT(*) FROM library_songs WHERE library_id = ?),
 		    last_scan = CURRENT_TIMESTAMP
 		WHERE id = ?
 	`, id, id)
 
+	log.Printf("[Library Scan] Committing %d songs to database...", count)
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	log.Printf("[Library Scan] Complete: %d songs indexed in %s", count, time.Since(scanStart).Round(time.Millisecond))
 	return count, nil
 }
 
