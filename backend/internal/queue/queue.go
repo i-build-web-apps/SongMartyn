@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 	"songmartyn/pkg/models"
 )
 
@@ -26,7 +26,7 @@ type Manager struct {
 
 // NewManager creates a new queue manager with SQLite persistence
 func NewManager(dbPath string) (*Manager, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
 	}

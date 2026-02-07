@@ -1,0 +1,75 @@
+version: 2
+
+before:
+  hooks:
+    # Build frontend and copy into embed location
+    - cmd: npm ci --prefix frontend
+    - cmd: npm run build --prefix frontend
+    - cmd: sh -c "rm -rf backend/cmd/songmartyn/dist && cp -r frontend/dist backend/cmd/songmartyn/dist"
+
+builds:
+  - id: songmartyn
+    dir: backend
+    main: ./cmd/songmartyn
+    binary: songmartyn
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: songmartyn
+    builds:
+      - songmartyn
+    name_template: "songmartyn_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: i-build-web-apps
+    name: SongMartyn
+  draft: true
+  prerelease: auto
+  name_template: "SongMartyn v{{ .Version }}"
+  header: |
+    ## What's New
+
+    Self-hosted karaoke party system. Download the binary for your platform, run it, and open the URL in your browser.
+
+    ### Quick Start
+    ```
+    ./songmartyn
+    ```
+    Then open https://localhost:8443 in your browser.
+
+    ### Requirements
+    - [mpv](https://mpv.io/) media player installed on the host machine
+    - [yt-dlp](https://github.com/yt-dlp/yt-dlp) (optional, for YouTube downloads)
+  footer: |
+    **Full Changelog**: https://github.com/i-build-web-apps/SongMartyn/compare/{{ .PreviousTag }}...{{ .Tag }}

@@ -2,8 +2,11 @@
 certs/
 
 # Compiled binary
-songmartyn
+/songmartyn
 bin/
+
+# Embedded frontend build (copied during build)
+cmd/songmartyn/dist/
 
 # Environment file (contains secrets)
 .env

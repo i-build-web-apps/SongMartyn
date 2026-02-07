@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -35,6 +36,13 @@ import (
 	"songmartyn/internal/websocket"
 	"songmartyn/internal/ytdl"
 	"songmartyn/pkg/models"
+)
+
+// Build info — set by goreleaser ldflags
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 )
 
 // Re-export library.SearchLog for use in handlers
@@ -612,10 +620,7 @@ func main() {
 		runtime.LockOSThread()
 	}
 
-	// Load config file (creates default if missing)
-	loadConfigFile(configFilePath)
-
-	// Parse flags (flags override config file values)
+	// Parse flags first (so -version can exit cleanly without side effects)
 	port := flag.String("port", "", "HTTPS server port (overrides HTTPS_PORT)")
 	httpPort := flag.String("http-port", "", "HTTP port (overrides HTTP_PORT)")
 	dataDir := flag.String("data", "", "Data directory (overrides DATA_DIR)")
@@ -626,7 +631,16 @@ func main() {
 	keyFile := flag.String("key", "", "TLS key (overrides TLS_KEY)")
 	youtubeAPIKey := flag.String("youtube-api-key", "", "YouTube API key (overrides YOUTUBE_API_KEY)")
 	launchBrowser := flag.Bool("launch-browser", false, "Auto-launch admin page in browser (overrides LAUNCH_BROWSER)")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("SongMartyn %s (commit: %s, built: %s)\n", version, commit, date)
+		os.Exit(0)
+	}
+
+	// Load config file (creates default if missing, sets env vars)
+	loadConfigFile(configFilePath)
 
 	// Build config: flags > env > defaults
 	config := Config{
@@ -2441,8 +2455,21 @@ func (app *App) Run() {
 	mux.HandleFunc("/api/avatar/random", handleAvatarRandom)
 
 	// Static files (frontend build) with SPA fallback
-	if _, err := os.Stat(app.config.StaticDir); err == nil {
-		mux.HandleFunc("/", spaHandler(app.config.StaticDir))
+	if app.config.DevMode && app.config.StaticDir != "" {
+		// Dev mode: serve from disk for hot-reload
+		if _, err := os.Stat(app.config.StaticDir); err == nil {
+			log.Printf("Dev mode: serving frontend from disk: %s", app.config.StaticDir)
+			mux.HandleFunc("/", spaHandler(os.DirFS(app.config.StaticDir)))
+		}
+	} else {
+		// Production: serve from embedded FS
+		distFS, err := fs.Sub(frontendDist, "dist")
+		if err != nil {
+			log.Printf("Warning: failed to access embedded frontend: %v", err)
+		} else {
+			log.Println("Serving frontend from embedded binary")
+			mux.HandleFunc("/", spaHandler(distFS))
+		}
 	}
 
 	// CORS middleware for dev mode
@@ -2455,6 +2482,7 @@ func (app *App) Run() {
 	httpsAddr := ":" + app.config.Port
 	httpAddr := ":" + app.config.HTTPPort
 
+	log.Printf("SongMartyn %s (commit: %s, built: %s)", version, commit, date)
 	log.Printf("SongMartyn starting on https://localhost%s", httpsAddr)
 	log.Printf("HTTP redirect server on http://localhost%s", httpAddr)
 	log.Printf("WebSocket endpoint: wss://localhost%s/ws", httpsAddr)
@@ -2599,31 +2627,33 @@ func parseIntParam(s string, defaultVal int) int {
 	return v
 }
 
-// spaHandler serves static files with SPA fallback to index.html
-func spaHandler(staticDir string) http.HandlerFunc {
-	fs := http.Dir(staticDir)
-	fileServer := http.FileServer(fs)
+// spaHandler serves static files from an fs.FS with SPA fallback to index.html.
+// Works with both embed.FS (production) and os.DirFS (development).
+func spaHandler(fsys fs.FS) http.HandlerFunc {
+	fileServer := http.FileServer(http.FS(fsys))
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
+		// Strip leading slash for fs.FS paths
+		path := strings.TrimPrefix(r.URL.Path, "/")
 
 		// Try to open the file
-		f, err := fs.Open(path)
+		f, err := fsys.Open(path)
 		if err != nil {
 			// File doesn't exist, serve index.html for SPA routing
 			r.URL.Path = "/"
 			fileServer.ServeHTTP(w, r)
 			return
 		}
-		f.Close()
 
-		// Check if it's a directory
-		stat, err := os.Stat(filepath.Join(staticDir, path))
-		if err == nil && stat.IsDir() {
-			// Check for index.html in directory
-			indexPath := filepath.Join(staticDir, path, "index.html")
-			if _, err := os.Stat(indexPath); err != nil {
-				// No index.html, serve root index.html
+		// Check if it's a directory without index.html
+		stat, _ := f.Stat()
+		f.Close()
+		if stat.IsDir() {
+			indexPath := path + "/index.html"
+			if path == "" {
+				indexPath = "index.html"
+			}
+			if _, err := fsys.Open(indexPath); err != nil {
 				r.URL.Path = "/"
 				fileServer.ServeHTTP(w, r)
 				return
@@ -3495,6 +3525,7 @@ func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 // SystemInfo represents system information
 type SystemInfo struct {
+	Version      string   `json:"version"`
 	OS           string   `json:"os"`
 	Arch         string   `json:"arch"`
 	Hostname     string   `json:"hostname"`
@@ -3525,6 +3556,7 @@ func (app *App) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(serverStartTime).Round(time.Second).String()
 
 	info := SystemInfo{
+		Version:      version,
 		OS:           runtime.GOOS,
 		Arch:         runtime.GOARCH,
 		Hostname:     hostname,
@@ -3595,18 +3627,9 @@ func getMemoryInfo() (total, free, used uint64) {
 	return 0, 0, used
 }
 
-// getDiskInfo returns disk statistics for a given path
+// getDiskInfo returns disk statistics for a given path (Unix implementation)
 func getDiskInfo(path string) (total, free, used uint64) {
-	// Use syscall for disk info - works on Unix-like systems
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, 0, 0
-	}
-
-	total = stat.Blocks * uint64(stat.Bsize)
-	free = stat.Bavail * uint64(stat.Bsize)
-	used = total - free
-	return
+	return getDiskInfoPlatform(path)
 }
 
 // NetworkInterface represents a network interface with its addresses

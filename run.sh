@@ -41,10 +41,15 @@ npm run build
 echo "  Frontend built to: $FRONTEND_DIR/dist"
 echo ""
 
+# Copy frontend into backend for embedding
+echo "  Embedding frontend into backend..."
+rm -rf "$BACKEND_DIR/cmd/songmartyn/dist"
+cp -r "$FRONTEND_DIR/dist" "$BACKEND_DIR/cmd/songmartyn/dist"
+
 # Build backend
 echo "[2/3] Building backend..."
 cd "$BACKEND_DIR"
-go build -o songmartyn ./cmd/songmartyn
+CGO_ENABLED=0 go build -o songmartyn ./cmd/songmartyn
 echo "  Backend built: $BACKEND_DIR/songmartyn"
 echo ""
 
