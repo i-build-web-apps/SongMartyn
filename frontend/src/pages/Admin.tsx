@@ -2,10 +2,10 @@ import { useEffect, useState, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAdminStore } from '../stores/adminStore';
 import { useLibraryStore } from '../stores/libraryStore';
-import { useRoomStore, selectQueue, selectQueuePosition, selectAutoplay, selectCountdown, selectIdle, selectBgmActive, selectBgmEnabled } from '../stores/roomStore';
+import { useRoomStore, selectQueue, selectQueuePosition, selectPlaybackConfig, selectCountdown, selectIdle, selectBgmActive, selectBgmEnabled } from '../stores/roomStore';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { wsService } from '../services/websocket';
-import type { ClientInfo, LibraryLocation, AvatarConfig, BGMSourceType, IcecastStream } from '../types';
+import type { ClientInfo, LibraryLocation, AvatarConfig, BGMSourceType, IcecastStream, PlaybackMode } from '../types';
 import { HelpModal, HelpButton, useHelpModal } from '../components/HelpModal';
 import { MPVSetupModal } from '../components/MPVSetupModal';
 import { YtDlpSetupModal } from '../components/YtDlpSetupModal';
@@ -2378,129 +2378,67 @@ function GeneralSettings() {
             </button>
           </div>
 
-          {/* Source Type Selection */}
+          {/* Stream URL */}
           <div>
-            <label className="block text-sm text-gray-400 mb-2">Source Type</label>
+            <label className="block text-sm text-gray-400 mb-1">Stream URL</label>
             <div className="flex gap-2">
+              <input
+                type="text"
+                value={bgmSettings.url}
+                onChange={(e) => setBgmSettings({ ...bgmSettings, source_type: 'icecast', url: e.target.value })}
+                placeholder="https://stream.example.com/radio.mp3"
+                className="flex-1 px-4 py-2 bg-matte-black rounded-lg border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-yellow-neon"
+              />
               <button
-                onClick={() => setBgmSettings({ ...bgmSettings, source_type: 'youtube', url: bgmSettings.source_type === 'youtube' ? bgmSettings.url : '' })}
-                className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
-                  bgmSettings.source_type === 'youtube'
-                    ? 'bg-red-600 text-white'
-                    : 'bg-matte-black text-gray-400 hover:bg-gray-700'
-                }`}
+                onClick={fetchIcecastStreams}
+                disabled={streamsLoading}
+                className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-500 transition-colors disabled:opacity-50 whitespace-nowrap"
               >
-                YouTube
-              </button>
-              <button
-                onClick={() => setBgmSettings({ ...bgmSettings, source_type: 'icecast', url: bgmSettings.source_type === 'icecast' ? bgmSettings.url : '' })}
-                className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
-                  bgmSettings.source_type === 'icecast'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-matte-black text-gray-400 hover:bg-gray-700'
-                }`}
-              >
-                Icecast Stream
+                {streamsLoading ? 'Loading...' : 'Find Streams'}
               </button>
             </div>
+            <p className="text-xs text-gray-500 mt-1">Enter an Icecast/internet radio stream URL, or browse popular streams</p>
           </div>
 
-          {/* YouTube Settings */}
-          {bgmSettings.source_type === 'youtube' && (
-            <div className="space-y-3">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <label className="block text-sm text-gray-400">YouTube API Key</label>
-                  <HelpButton onClick={() => openHelp('youtubeApi')} />
-                </div>
-                <input
-                  type="text"
-                  value={settings.youtube_api_key}
-                  onChange={(e) => setSettings({ ...settings, youtube_api_key: e.target.value })}
-                  placeholder="Enter YouTube Data API v3 key"
-                  className="w-full px-4 py-2 bg-matte-black rounded-lg border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-yellow-neon font-mono text-sm"
-                />
-                <p className="text-xs text-gray-500 mt-1">Required for YouTube search and BGM playback</p>
+          {/* Stream Picker */}
+          {showStreamPicker && icecastStreams.length > 0 && (
+            <div className="bg-matte-black rounded-xl border border-white/10 max-h-80 overflow-y-auto">
+              <div className="sticky top-0 bg-matte-black px-4 py-2 border-b border-white/10 flex justify-between items-center">
+                <span className="text-sm font-medium text-white">Select a Stream</span>
+                <button
+                  onClick={() => setShowStreamPicker(false)}
+                  className="text-gray-400 hover:text-white"
+                >
+                  Close
+                </button>
               </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">YouTube URL or Playlist</label>
-                <input
-                  type="text"
-                  value={bgmSettings.url}
-                  onChange={(e) => setBgmSettings({ ...bgmSettings, url: e.target.value })}
-                  placeholder="https://www.youtube.com/watch?v=..."
-                  className="w-full px-4 py-2 bg-matte-black rounded-lg border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-yellow-neon"
-                />
-                <p className="text-xs text-gray-500 mt-1">Supports single videos, playlists, and live streams</p>
-              </div>
-            </div>
-          )}
-
-          {/* Icecast Stream Input */}
-          {bgmSettings.source_type === 'icecast' && (
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">Stream URL</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={bgmSettings.url}
-                    onChange={(e) => setBgmSettings({ ...bgmSettings, url: e.target.value })}
-                    placeholder="https://stream.example.com/radio.mp3"
-                    className="flex-1 px-4 py-2 bg-matte-black rounded-lg border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-yellow-neon"
-                  />
+              <div className="divide-y divide-white/5">
+                {icecastStreams.map((stream, index) => (
                   <button
-                    onClick={fetchIcecastStreams}
-                    disabled={streamsLoading}
-                    className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-500 transition-colors disabled:opacity-50 whitespace-nowrap"
+                    key={index}
+                    onClick={() => selectIcecastStream(stream)}
+                    className="w-full px-4 py-3 text-left hover:bg-gray-800 transition-colors"
                   >
-                    {streamsLoading ? 'Loading...' : 'Find Streams'}
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Enter a stream URL or browse popular music streams</p>
-              </div>
-
-              {/* Stream Picker Modal */}
-              {showStreamPicker && icecastStreams.length > 0 && (
-                <div className="bg-matte-black rounded-xl border border-white/10 max-h-80 overflow-y-auto">
-                  <div className="sticky top-0 bg-matte-black px-4 py-2 border-b border-white/10 flex justify-between items-center">
-                    <span className="text-sm font-medium text-white">Select a Stream</span>
-                    <button
-                      onClick={() => setShowStreamPicker(false)}
-                      className="text-gray-400 hover:text-white"
-                    >
-                      Close
-                    </button>
-                  </div>
-                  <div className="divide-y divide-white/5">
-                    {icecastStreams.map((stream, index) => (
-                      <button
-                        key={index}
-                        onClick={() => selectIcecastStream(stream)}
-                        className="w-full px-4 py-3 text-left hover:bg-gray-800 transition-colors"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex-1 min-w-0">
-                            <div className="text-white font-medium truncate">{stream.name}</div>
-                            <div className="text-sm text-gray-400 truncate">{stream.description}</div>
-                            <div className="flex gap-2 mt-1">
-                              <span className="text-xs px-2 py-0.5 bg-gray-700 rounded text-gray-300">
-                                {stream.genre}
-                              </span>
-                              <span className="text-xs px-2 py-0.5 bg-gray-700 rounded text-gray-300">
-                                {stream.bitrate}kbps {stream.format}
-                              </span>
-                            </div>
-                          </div>
-                          <svg className="w-5 h-5 text-gray-400 flex-shrink-0 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-white font-medium truncate">{stream.name}</div>
+                        <div className="text-sm text-gray-400 truncate">{stream.description}</div>
+                        <div className="flex gap-2 mt-1">
+                          <span className="text-xs px-2 py-0.5 bg-gray-700 rounded text-gray-300">
+                            {stream.genre}
+                          </span>
+                          <span className="text-xs px-2 py-0.5 bg-gray-700 rounded text-gray-300">
+                            {stream.bitrate}kbps {stream.format}
+                          </span>
                         </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+                      </div>
+                      <svg className="w-5 h-5 text-gray-400 flex-shrink-0 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -2603,22 +2541,43 @@ function GeneralSettings() {
             </div>
           </div>
 
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <label className="block text-sm text-gray-400">YouTube Downloads</label>
-              <HelpButton onClick={() => openHelp('ytdlp')} />
+          {/* YouTube Section */}
+          <div className="border-t border-white/5 pt-4 mt-4">
+            <h3 className="text-md font-semibold text-white mb-4">YouTube</h3>
+            <div className="space-y-4">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <label className="block text-sm text-gray-400">YouTube API Key</label>
+                  <HelpButton onClick={() => openHelp('youtubeApi')} />
+                </div>
+                <p className="text-xs text-gray-500 mb-2">Required for YouTube search. Guests can find karaoke videos directly from YouTube.</p>
+                <input
+                  type="text"
+                  value={settings.youtube_api_key}
+                  onChange={(e) => setSettings({ ...settings, youtube_api_key: e.target.value })}
+                  placeholder="Enter YouTube Data API v3 key"
+                  className="w-full px-4 py-3 bg-matte-black rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-neon font-mono text-sm"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <label className="block text-sm text-gray-400">YouTube Downloads (yt-dlp)</label>
+                  <HelpButton onClick={() => openHelp('ytdlp')} />
+                </div>
+                <p className="text-xs text-gray-500 mb-2">Required to download and play YouTube songs</p>
+                <button
+                  type="button"
+                  onClick={() => setShowYtDlpSetup(true)}
+                  className="px-4 py-3 bg-blue-500/20 text-blue-400 rounded-xl hover:bg-blue-500/30 transition-colors flex items-center gap-2 whitespace-nowrap"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  Install yt-dlp
+                </button>
+              </div>
             </div>
-            <p className="text-xs text-gray-500 mb-2">Required to download and play YouTube songs</p>
-            <button
-              type="button"
-              onClick={() => setShowYtDlpSetup(true)}
-              className="px-4 py-3 bg-blue-500/20 text-blue-400 rounded-xl hover:bg-blue-500/30 transition-colors flex items-center gap-2 whitespace-nowrap"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-              Install yt-dlp
-            </button>
           </div>
 
           {/* Display Settings */}
@@ -3154,7 +3113,6 @@ function QueueManagement() {
   // Use the shared roomStore state - same as the Queue component
   const queue = useRoomStore(selectQueue);
   const currentPosition = useRoomStore(selectQueuePosition);
-  const autoplay = useRoomStore(selectAutoplay);
   const idle = useRoomStore(selectIdle);
   const clients = useAdminStore((state) => state.clients);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
@@ -3192,10 +3150,6 @@ function QueueManagement() {
   // Upcoming songs — everything after current (or from current if idle)
   const upcomingStart = nowPlayingSong ? currentPosition + 1 : currentPosition;
   const queueSongs = queue.filter((_, index) => index >= upcomingStart);
-
-  const handleToggleAutoplay = () => {
-    wsService.setAutoplay(!autoplay);
-  };
 
   const handleShuffle = () => {
     wsService.queueShuffle();
@@ -3301,23 +3255,6 @@ function QueueManagement() {
           {/* Secondary Controls */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              {/* Autoplay Toggle Switch */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm text-gray-400">Autoplay</span>
-                <button
-                  onClick={handleToggleAutoplay}
-                  className={`relative w-12 h-6 rounded-full transition-colors ${
-                    autoplay ? 'bg-yellow-neon' : 'bg-gray-600'
-                  }`}
-                >
-                  <div
-                    className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform shadow ${
-                      autoplay ? 'translate-x-7' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
-              </div>
-
               {/* Shuffle Button */}
               <button
                 onClick={handleShuffle}
@@ -3893,6 +3830,9 @@ export function Admin() {
     });
   };
 
+  // Help modal for playback mode
+  const { activeHelp, openHelp, closeHelp } = useHelpModal();
+
   // Initialize WebSocket connection and roomStore updates
   useWebSocket();
 
@@ -3907,6 +3847,7 @@ export function Admin() {
   const queue = useRoomStore(selectQueue);
   const currentPosition = useRoomStore(selectQueuePosition);
   const countdown = useRoomStore(selectCountdown);
+  const playbackConfig = useRoomStore(selectPlaybackConfig);
   const idle = useRoomStore(selectIdle);
   const bgmActive = useRoomStore(selectBgmActive);
   const bgmEnabled = useRoomStore(selectBgmEnabled);
@@ -4072,12 +4013,12 @@ export function Admin() {
         {countdown.active && (
           <div
             className={`absolute inset-0 transition-all duration-1000 ease-linear ${
-              countdown.requires_approval
-                ? 'bg-gradient-to-r from-orange-500/30 to-amber-500/30'
+              playbackConfig.mode === 'singer'
+                ? 'bg-gradient-to-r from-purple-500/30 to-pink-500/30'
                 : 'bg-gradient-to-r from-cyan-500/30 to-cyan-400/30'
             }`}
             style={{
-              width: `${(countdown.seconds_remaining / 10) * 100}%`,
+              width: `${(countdown.seconds_remaining / (playbackConfig.countdown_timer || 10)) * 100}%`,
               transition: 'width 1s linear'
             }}
           />
@@ -4089,15 +4030,15 @@ export function Admin() {
               // Countdown active - show countdown with song info
               <div className="flex items-center gap-3">
                 <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl font-bold flex-shrink-0 shadow-lg ${
-                  countdown.requires_approval
-                    ? 'bg-gradient-to-br from-orange-500 to-amber-500 text-white animate-pulse'
+                  playbackConfig.mode === 'singer'
+                    ? 'bg-gradient-to-br from-purple-500 to-pink-500 text-white'
                     : 'bg-gradient-to-br from-cyan-500 to-cyan-400 text-white'
                 }`}>
                   {countdown.seconds_remaining}
                 </div>
                 <div className="min-w-0">
                   <div className="text-sm font-semibold text-white truncate">
-                    {countdown.requires_approval ? 'Waiting for approval...' : 'Starting soon...'}
+                    {playbackConfig.mode === 'singer' ? 'Singer starting...' : 'Starting soon...'}
                   </div>
                   <div className="text-base font-medium text-white truncate">
                     {nextSong?.title || 'Next Song'}
@@ -4184,11 +4125,7 @@ export function Admin() {
             {countdown.active && (
               <button
                 onClick={handleStartNow}
-                className={`px-3 py-2 text-sm font-bold rounded-xl transition-all ${
-                  countdown.requires_approval
-                    ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white'
-                    : 'bg-gradient-to-r from-cyan-500 to-cyan-400 text-gray-900'
-                }`}
+                className="px-3 py-2 text-sm font-bold rounded-xl transition-all bg-gradient-to-r from-cyan-500 to-cyan-400 text-gray-900"
               >
                 Start
               </button>
@@ -4218,6 +4155,65 @@ export function Admin() {
               </button>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Playback Mode Controls */}
+      <div className="px-4 py-2 bg-matte-gray/50 border-b border-white/5">
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Mode selector */}
+          <div className="flex rounded-lg overflow-hidden border border-white/10">
+            {(['singer', 'admin', 'autoplay'] as PlaybackMode[]).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => wsService.setPlaybackConfig({ ...playbackConfig, mode })}
+                className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
+                  playbackConfig.mode === mode
+                    ? mode === 'singer'
+                      ? 'bg-purple-500 text-white'
+                      : mode === 'autoplay'
+                        ? 'bg-cyan-500 text-gray-900'
+                        : 'bg-amber-500 text-gray-900'
+                    : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                }`}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+
+          {/* Timer */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-gray-500">Timer</span>
+            <select
+              value={playbackConfig.countdown_timer}
+              onChange={(e) => wsService.setPlaybackConfig({ ...playbackConfig, countdown_timer: Number(e.target.value) })}
+              className="bg-white/5 border border-white/10 rounded-md px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-white/20"
+            >
+              {[5, 10, 15, 20, 30].map((v) => (
+                <option key={v} value={v}>{v}s</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Delay - only in autoplay mode */}
+          {playbackConfig.mode === 'autoplay' && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-gray-500">Delay</span>
+              <select
+                value={playbackConfig.autoplay_delay}
+                onChange={(e) => wsService.setPlaybackConfig({ ...playbackConfig, autoplay_delay: Number(e.target.value) })}
+                className="bg-white/5 border border-white/10 rounded-md px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-white/20"
+              >
+                {[0, 3, 5, 10, 15].map((v) => (
+                  <option key={v} value={v}>{v}s</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Help button */}
+          <HelpButton onClick={() => openHelp('playbackMode')} />
         </div>
       </div>
 
@@ -4287,6 +4283,11 @@ export function Admin() {
         isOpen={showMessageModal}
         onClose={() => setShowMessageModal(false)}
       />
+
+      {/* Help Modal */}
+      {activeHelp && (
+        <HelpModal topic={activeHelp} isOpen={true} onClose={closeHelp} />
+      )}
     </div>
   );
 }

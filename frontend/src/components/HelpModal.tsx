@@ -33,29 +33,29 @@ The interface marked "Active" with a green badge is currently connected and work
     sections: [
       {
         heading: 'What is this?',
-        content: `The YouTube API allows guests to search for karaoke videos directly from YouTube. Without an API key, only your local library will be searchable.`,
+        content: `The YouTube Data API lets your guests search for karaoke videos directly from YouTube. Without an API key, only your local song library will be searchable.`,
       },
       {
         heading: 'Getting an API Key',
         content: `
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or select existing)
-3. Enable the **YouTube Data API v3**
-4. Go to **Credentials** > **Create Credentials** > **API Key**
-5. Copy the API key and paste it here
+1. Open the **YouTube Data API** page and click **Enable**
+2. Go to the **Credentials** page
+3. Click **Create Credentials** > **API Key**
+4. Copy the key and paste it into the field above
 
-The free tier includes 10,000 quota units/day (about 100 searches).`,
+That's it! The free tier gives you 10,000 quota units per day (roughly 100 searches).`,
         links: [
-          { label: 'Google Cloud Console', url: 'https://console.cloud.google.com/' },
-          { label: 'YouTube API Documentation', url: 'https://developers.google.com/youtube/v3/getting-started' },
+          { label: 'Enable YouTube Data API', url: 'https://console.cloud.google.com/marketplace/product/google/youtube.googleapis.com' },
+          { label: 'Create Credentials', url: 'https://console.cloud.google.com/apis/credentials' },
         ],
       },
       {
-        heading: 'Security Notes',
+        heading: 'Security Tips',
         content: `
-- Consider restricting your API key to this server's IP address
+- Restrict your API key to the **YouTube Data API v3** only (under "API restrictions")
+- Optionally restrict by IP address if your server has a fixed IP
 - YouTube API keys are free but have daily quotas
-- The key is stored locally in your .env file`,
+- The key is stored locally in your songmartyn.config file`,
       },
     ],
   },
@@ -209,6 +209,44 @@ Downloads are stored in the \`youtube-cache\` folder inside your data directory.
 - **Downloads fail**: Make sure yt-dlp is up to date (\`yt-dlp -U\`)
 - **Slow downloads**: This depends on your internet connection speed
 - **Cache cleanup**: Delete files in the \`youtube-cache\` folder to free disk space`,
+      },
+    ],
+  },
+
+  playbackMode: {
+    title: 'Playback Modes',
+    sections: [
+      {
+        heading: 'Singer Mode',
+        content: `In Singer mode, when it's someone's turn, they get a "Start Your Song" button on their phone. If they don't press it within the countdown timer, the song starts automatically.
+
+This is great for parties where singers want a moment to get ready before their song begins.`,
+      },
+      {
+        heading: 'Admin Mode',
+        content: `In Admin mode, only the admin can start songs. When a song finishes, the system waits on the holding screen until the admin presses Play.
+
+This gives the admin full control over pacing — useful for organized events or when you want to make announcements between songs.`,
+      },
+      {
+        heading: 'Autoplay Mode',
+        content: `In Autoplay mode, songs play back-to-back automatically. When one song finishes, the next one starts after the countdown timer expires.
+
+You can add an extra delay before the countdown begins using the Delay setting — this creates breathing room between songs.`,
+      },
+      {
+        heading: 'Countdown Timer',
+        content: `The countdown timer controls how many seconds the "starting soon" countdown lasts before a song begins. This applies to all modes.
+
+- Singer mode: The singer can press Start during the countdown, or wait for it to expire
+- Autoplay mode: The countdown runs automatically after any delay
+- Admin mode: The countdown starts when the admin presses Play`,
+      },
+      {
+        heading: 'Autoplay Delay',
+        content: `Only available in Autoplay mode. This adds extra seconds of pause between songs BEFORE the countdown begins.
+
+For example, with a 5s delay and 10s timer: song ends → 5 seconds of holding screen → 10 second countdown → next song plays.`,
       },
     ],
   },

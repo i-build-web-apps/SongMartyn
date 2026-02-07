@@ -2,6 +2,56 @@ import { useEffect, useRef } from 'react';
 import { wsService } from '../services/websocket';
 import { useRoomStore } from '../stores/roomStore';
 
+// Track the last song ID we notified about to avoid repeats
+let lastNotifiedNextUpId: string | null = null;
+
+function checkNextUpNotification(store: ReturnType<typeof useRoomStore.getState>) {
+  const { queue, session, playback } = store;
+  if (!session || !queue.songs.length) return;
+
+  // Find the next song after current position
+  const nextSong = queue.songs[queue.position + 1];
+  if (!nextSong) return;
+
+  // Only notify if it's the current user's song
+  if (nextSong.added_by !== session.martyn_key) {
+    lastNotifiedNextUpId = null;
+    return;
+  }
+
+  // Don't re-notify for the same song
+  if (lastNotifiedNextUpId === nextSong.id) return;
+  lastNotifiedNextUpId = nextSong.id;
+
+  // Singer mode: more actionable notification
+  const isSingerMode = playback?.mode === 'singer';
+  const inAppMessage = isSingerMode
+    ? `You're up next! Tap "Start Your Song" when ready`
+    : `You're up next! "${nextSong.title}" is coming up`;
+  const browserTitle = isSingerMode
+    ? 'Your turn! Tap to start'
+    : 'You\'re up next! 🎤';
+  const browserBody = isSingerMode
+    ? `"${nextSong.title}" — tap Start when you're ready`
+    : `"${nextSong.title}" by ${nextSong.artist}`;
+
+  // Show in-app notification
+  store.addNotification('info', inAppMessage);
+
+  // Fire browser notification if permitted
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      new Notification(browserTitle, {
+        body: browserBody,
+        icon: nextSong.thumbnail_url || '/favicon.ico',
+        tag: 'next-up', // Replaces previous next-up notification
+      });
+    } catch {
+      // Browser notification failed (e.g. mobile Safari) — in-app is enough
+    }
+  }
+}
+
 export function useWebSocket() {
   const isInitialized = useRef(false);
 
@@ -24,7 +74,10 @@ export function useWebSocket() {
     });
 
     const unsubState = wsService.on('state_update', (state) => {
-      store.updateState(state);
+      const currentStore = useRoomStore.getState();
+      currentStore.updateState(state);
+      // Check if user's song just moved to "next up" position
+      checkNextUpNotification(useRoomStore.getState());
     });
 
     const unsubError = wsService.on('error', (payload) => {

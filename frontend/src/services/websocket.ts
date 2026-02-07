@@ -7,6 +7,7 @@ import type {
   SearchResult,
   ClientInfo,
   AvatarConfig,
+  PlaybackConfig,
 } from '../types';
 
 const MARTYN_KEY_STORAGE = 'songmartyn_key';
@@ -249,8 +250,12 @@ class WebSocketService {
     this.send('remove_favorite', songID);
   }
 
-  setAutoplay(enabled: boolean): void {
-    this.send('autoplay', enabled);
+  setPlaybackConfig(config: PlaybackConfig): void {
+    this.send('set_playback_config', config);
+  }
+
+  singerStart(): void {
+    this.send('singer_start', null);
   }
 
   setDisplayName(name: string, avatarId?: string, avatarConfig?: AvatarConfig): void {

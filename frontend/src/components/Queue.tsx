@@ -1,4 +1,4 @@
-import { useRoomStore, selectQueue, selectQueuePosition, selectSession, selectActiveSessions, selectIdle } from '../stores/roomStore';
+import { useRoomStore, selectQueue, selectQueuePosition, selectSession, selectActiveSessions, selectIdle, selectCountdown, selectPlaybackConfig } from '../stores/roomStore';
 import { wsService } from '../services/websocket';
 import { buildAvatarUrl } from './AvatarCreator';
 import type { Song, Session, AvatarConfig } from '../types';
@@ -231,6 +231,8 @@ export function Queue() {
   const idle = useRoomStore(selectIdle);
   const session = useRoomStore(selectSession);
   const sessions = useRoomStore(selectActiveSessions);
+  const countdown = useRoomStore(selectCountdown);
+  const playbackConfig = useRoomStore(selectPlaybackConfig);
 
   // Current song (at position) — only show as "now playing" if not idle
   const currentSong = !idle && position >= 0 && position < songs.length ? songs[position] : null;
@@ -239,7 +241,12 @@ export function Queue() {
   const upcomingStart = currentSong ? position + 1 : position;
   const upcomingSongs = songs.filter((_, index) => index >= upcomingStart);
 
-  const noContent = !currentSong && upcomingSongs.length === 0;
+  // Singer mode: show Start button when it's this user's turn
+  const showSingerStart = countdown.active
+    && playbackConfig.mode === 'singer'
+    && session?.martyn_key === countdown.next_singer_key;
+
+  const noContent = !currentSong && upcomingSongs.length === 0 && !showSingerStart;
 
   if (noContent) {
     return (
@@ -269,6 +276,19 @@ export function Queue() {
           />
         );
       })()}
+
+      {/* Singer Start Button — shown when it's this user's turn in singer mode */}
+      {showSingerStart && (
+        <button
+          onClick={() => wsService.singerStart()}
+          className="w-full mb-3 py-4 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-lg font-bold rounded-2xl shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2"
+        >
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+          </svg>
+          Start Your Song!
+        </button>
+      )}
 
       {/* Up Next queue */}
       <div className="bg-matte-gray rounded-2xl p-4">

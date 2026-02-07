@@ -375,37 +375,7 @@ func TestClear(t *testing.T) {
 	}
 }
 
-func TestAutoplay(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
-
-	manager, err := NewManager(tmpFile.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer manager.Close()
-
-	// Default should be off
-	if manager.GetAutoplay() {
-		t.Error("Autoplay should be off by default")
-	}
-
-	// Enable autoplay
-	manager.SetAutoplay(true)
-	if !manager.GetAutoplay() {
-		t.Error("Autoplay should be enabled")
-	}
-
-	// Disable autoplay
-	manager.SetAutoplay(false)
-	if manager.GetAutoplay() {
-		t.Error("Autoplay should be disabled")
-	}
-}
+// TestAutoplay removed: autoplay is now managed by App, not Queue
 
 func TestRemoveByUser(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "queue_test_*.db")
@@ -683,7 +653,6 @@ func TestPersistence(t *testing.T) {
 
 	manager1.Add(createTestSong("song1", "Persisted Song One", "Artist", "user1"))
 	manager1.Add(createTestSong("song2", "Persisted Song Two", "Artist", "user1"))
-	manager1.SetAutoplay(true)
 	manager1.Next() // Move to position 1
 	manager1.Close()
 
@@ -706,12 +675,6 @@ func TestPersistence(t *testing.T) {
 
 	if state.Position != 1 {
 		t.Errorf("Position should be persisted as 1, got %d", state.Position)
-	}
-
-	// Autoplay intentionally resets to OFF on startup for safety
-	// (prevents unexpected playback when server restarts)
-	if state.Autoplay {
-		t.Error("Autoplay should reset to false on startup (safety feature)")
 	}
 }
 

@@ -128,11 +128,19 @@ export interface IcecastStream {
   format: string;
 }
 
+// Playback mode
+export type PlaybackMode = 'singer' | 'admin' | 'autoplay';
+
+export interface PlaybackConfig {
+  mode: PlaybackMode;
+  countdown_timer: number;
+  autoplay_delay: number;
+}
+
 // Queue state
 export interface QueueState {
   songs: Song[];
   position: number;
-  autoplay: boolean;
 }
 
 // Countdown state (inter-song countdown)
@@ -141,7 +149,6 @@ export interface CountdownState {
   seconds_remaining: number;
   next_song_id: string;
   next_singer_key: string;
-  requires_approval: boolean;
 }
 
 // Room state (full sync)
@@ -150,6 +157,7 @@ export interface RoomState {
   queue: QueueState;
   sessions: Session[];
   countdown: CountdownState;
+  playback: PlaybackConfig;
 }
 
 // WebSocket message types
@@ -174,7 +182,8 @@ export type MessageType =
   | 'add_favorite'
   | 'remove_favorite'
   | 'set_display_name'
-  | 'autoplay'
+  | 'set_playback_config'
+  | 'singer_start'
   | 'admin_set_admin'
   | 'admin_kick'
   | 'admin_block'

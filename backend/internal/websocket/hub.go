@@ -42,7 +42,8 @@ const (
 	MsgKeyChange      MessageType = "key_change"       // Set pitch shift in semitones
 	MsgTempoChange    MessageType = "tempo_change"     // Set tempo/speed multiplier
 	MsgSetDisplayName MessageType = "set_display_name" // Set custom display name
-	MsgAutoplay       MessageType = "autoplay"         // Toggle autoplay
+	MsgSetPlaybackConfig MessageType = "set_playback_config" // Set playback mode/timer/delay
+	MsgSingerStart       MessageType = "singer_start"        // Singer starts their song
 	MsgQueueShuffle   MessageType = "queue_shuffle"    // Shuffle queue
 	MsgQueueRequeue   MessageType = "queue_requeue"    // Re-add song from history
 	MsgSetAFK         MessageType = "set_afk"          // Set AFK status
@@ -223,7 +224,8 @@ type Hub struct {
 	onKeyChange        func(client *Client, semitones int)
 	onTempoChange      func(client *Client, speed float64)
 	onSetDisplayName   func(client *Client, name string, avatarID string, avatarConfig *models.AvatarConfig)
-	onAutoplay         func(client *Client, enabled bool)
+	onSetPlaybackConfig func(client *Client, config models.PlaybackConfig)
+	onSingerStart       func(client *Client)
 	onQueueShuffle     func(client *Client)
 	onQueueRequeue     func(client *Client, songID string, martynKey string)
 	onSetAFK           func(client *Client, isAFK bool)
@@ -436,7 +438,8 @@ func (h *Hub) SetHandlers(handlers HubHandlers) {
 	h.onKeyChange = handlers.OnKeyChange
 	h.onTempoChange = handlers.OnTempoChange
 	h.onSetDisplayName = handlers.OnSetDisplayName
-	h.onAutoplay = handlers.OnAutoplay
+	h.onSetPlaybackConfig = handlers.OnSetPlaybackConfig
+	h.onSingerStart = handlers.OnSingerStart
 	h.onQueueShuffle = handlers.OnQueueShuffle
 	h.onQueueRequeue = handlers.OnQueueRequeue
 	h.onSetAFK = handlers.OnSetAFK
@@ -474,7 +477,8 @@ type HubHandlers struct {
 	OnKeyChange        func(client *Client, semitones int)
 	OnTempoChange      func(client *Client, speed float64)
 	OnSetDisplayName   func(client *Client, name string, avatarID string, avatarConfig *models.AvatarConfig)
-	OnAutoplay         func(client *Client, enabled bool)
+	OnSetPlaybackConfig func(client *Client, config models.PlaybackConfig)
+	OnSingerStart       func(client *Client)
 	OnQueueShuffle     func(client *Client)
 	OnQueueRequeue     func(client *Client, songID string, martynKey string)
 	OnSetAFK           func(client *Client, isAFK bool)
@@ -701,18 +705,27 @@ func (c *Client) handleMessage(msg Message) {
 			c.hub.onSetDisplayName(c, payload.DisplayName, payload.AvatarID, payload.AvatarConfig)
 		}
 
-	case MsgAutoplay:
-		// Admin only - toggle autoplay
+	case MsgSetPlaybackConfig:
+		// Admin only - set playback mode/timer/delay
 		if c.session == nil || !c.session.IsAdmin {
 			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
 			return
 		}
-		var enabled bool
-		if err := json.Unmarshal(msg.Payload, &enabled); err != nil {
+		var config models.PlaybackConfig
+		if err := json.Unmarshal(msg.Payload, &config); err != nil {
 			return
 		}
-		if c.hub.onAutoplay != nil {
-			c.hub.onAutoplay(c, enabled)
+		if c.hub.onSetPlaybackConfig != nil {
+			c.hub.onSetPlaybackConfig(c, config)
+		}
+
+	case MsgSingerStart:
+		// Any authenticated user (singer starts their own song)
+		if c.session == nil {
+			return
+		}
+		if c.hub.onSingerStart != nil {
+			c.hub.onSingerStart(c)
 		}
 
 	case MsgQueueShuffle:

@@ -2,6 +2,22 @@ package models
 
 import "time"
 
+// PlaybackMode represents how songs are started between singers
+type PlaybackMode string
+
+const (
+	PlaybackModeSinger   PlaybackMode = "singer"   // Singer starts via phone button, auto-plays on timeout
+	PlaybackModeAdmin    PlaybackMode = "admin"     // Admin must start each song
+	PlaybackModeAutoplay PlaybackMode = "autoplay"  // Auto-advance between songs with optional delay
+)
+
+// PlaybackConfig holds playback mode and timing settings
+type PlaybackConfig struct {
+	Mode           PlaybackMode `json:"mode"`
+	CountdownTimer int          `json:"countdown_timer"` // seconds before song starts (default 10)
+	AutoplayDelay  int          `json:"autoplay_delay"`  // seconds before countdown in autoplay mode
+}
+
 // VocalAssistLevel represents the Chortle vocal assist intensity
 type VocalAssistLevel string
 
@@ -127,7 +143,6 @@ type IcecastStream struct {
 type QueueState struct {
 	Songs    []Song `json:"songs"`
 	Position int    `json:"position"` // Current position in queue
-	Autoplay bool   `json:"autoplay"` // Auto-advance to next song when current ends
 }
 
 // CountdownState represents the inter-song countdown
@@ -136,7 +151,6 @@ type CountdownState struct {
 	SecondsRemaining int    `json:"seconds_remaining"` // Seconds until auto-play
 	NextSongID       string `json:"next_song_id"`      // ID of next song
 	NextSingerKey    string `json:"next_singer_key"`   // MartynKey of next singer
-	RequiresApproval bool   `json:"requires_approval"` // Admin must start (different user)
 }
 
 // RoomState represents the entire room state
@@ -145,6 +159,7 @@ type RoomState struct {
 	Queue     QueueState     `json:"queue"`
 	Sessions  []Session      `json:"sessions"`  // Connected clients
 	Countdown CountdownState `json:"countdown"` // Inter-song countdown
+	Playback  PlaybackConfig `json:"playback"`  // Playback mode and timing
 }
 
 // LibraryLocation represents a folder containing media files

@@ -2,12 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -135,6 +142,13 @@ type App struct {
 	holdingMessage   string
 	holdingMessageMu sync.RWMutex
 
+	// Playback mode and timing config — protected by playbackConfigMu
+	playbackConfig   models.PlaybackConfig
+	playbackConfigMu sync.RWMutex
+
+	// Autoplay delay timer cancel — protected by countdownMu
+	autoplayDelayCancel context.CancelFunc
+
 	// Inter-song countdown state
 	countdown       models.CountdownState
 	countdownTicker *time.Ticker
@@ -187,6 +201,18 @@ func (app *App) setBGMSettings(s models.BGMSettings) {
 	app.stateMu.Unlock()
 }
 
+func (app *App) getPlaybackConfig() models.PlaybackConfig {
+	app.playbackConfigMu.RLock()
+	defer app.playbackConfigMu.RUnlock()
+	return app.playbackConfig
+}
+
+func (app *App) setPlaybackConfig(config models.PlaybackConfig) {
+	app.playbackConfigMu.Lock()
+	app.playbackConfig = config
+	app.playbackConfigMu.Unlock()
+}
+
 // getEnv returns environment variable value or default
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
@@ -212,6 +238,18 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 	}
 	if f, err := strconv.ParseFloat(value, 64); err == nil {
 		return f
+	}
+	return defaultValue
+}
+
+// getEnvInt returns environment variable as int
+func getEnvInt(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	if i, err := strconv.Atoi(value); err == nil {
+		return i
 	}
 	return defaultValue
 }
@@ -289,8 +327,8 @@ TARGET_DISPLAY=
 AUTO_FULLSCREEN=true
 
 # Video quality mode: (empty)=off, enhanced, softened [admin panel]
-# Default: (empty)
-VIDEO_QUALITY=
+# Default: softened
+VIDEO_QUALITY=softened
 
 # -----------------------------------------------------------
 # Feature Toggles
@@ -317,6 +355,25 @@ SCROLLING_TICKER_ENABLED=true
 SINGER_NAME_OVERLAY=true
 
 # -----------------------------------------------------------
+# Playback
+# -----------------------------------------------------------
+
+# Playback mode: singer, admin, autoplay [admin panel]
+# singer = singer starts from phone, auto-plays on timeout
+# admin = admin must start each song
+# autoplay = songs auto-advance with optional delay
+# Default: admin
+PLAYBACK_MODE=admin
+
+# Countdown timer before songs start (seconds) [admin panel]
+# Default: 10
+COUNTDOWN_TIMER=10
+
+# Extra delay before countdown in autoplay mode (seconds) [admin panel]
+# Default: 0
+AUTOPLAY_DELAY=0
+
+# -----------------------------------------------------------
 # Background Music (BGM)
 # -----------------------------------------------------------
 
@@ -341,8 +398,8 @@ BGM_VOLUME=50
 # -----------------------------------------------------------
 
 # Message displayed on the holding screen [admin panel]
-# Default: (empty)
-HOLDING_MESSAGE=
+# Default: Pick a song and sing your heart out!
+HOLDING_MESSAGE=Pick a song and sing your heart out!
 
 # -----------------------------------------------------------
 # Network
@@ -353,8 +410,8 @@ HOLDING_MESSAGE=
 MDNS_HOSTNAME=karaoke
 
 # Auto-launch admin page in browser on startup
-# Default: false
-LAUNCH_BROWSER=false
+# Default: true
+LAUNCH_BROWSER=true
 `
 
 // loadConfigFile reads a key=value config file and sets environment variables.
@@ -441,6 +498,7 @@ func boolToConfig(b bool) string {
 // This ensures no settings are silently lost (unlike the old .env approach).
 func (app *App) writeConfigFile() error {
 	bgm := app.getBGMSettings()
+	pbc := app.getPlaybackConfig()
 
 	app.holdingMessageMu.RLock()
 	holdingMsg := app.holdingMessage
@@ -543,6 +601,25 @@ SCROLLING_TICKER_ENABLED=%s
 SINGER_NAME_OVERLAY=%s
 
 # -----------------------------------------------------------
+# Playback
+# -----------------------------------------------------------
+
+# Playback mode: singer, admin, autoplay [admin panel]
+# singer = singer starts from phone, auto-plays on timeout
+# admin = admin must start each song
+# autoplay = songs auto-advance with optional delay
+# Default: admin
+PLAYBACK_MODE=%s
+
+# Countdown timer before songs start (seconds) [admin panel]
+# Default: 10
+COUNTDOWN_TIMER=%d
+
+# Extra delay before countdown in autoplay mode (seconds) [admin panel]
+# Default: 0
+AUTOPLAY_DELAY=%d
+
+# -----------------------------------------------------------
 # Background Music (BGM)
 # -----------------------------------------------------------
 
@@ -590,12 +667,118 @@ LAUNCH_BROWSER=%s
 		boolToConfig(app.config.PitchControlEnabled), boolToConfig(app.config.TempoControlEnabled),
 		boolToConfig(app.config.FairRotationEnabled), boolToConfig(app.config.ScrollingTickerEnabled),
 		boolToConfig(app.config.SingerNameOverlay),
+		string(pbc.Mode), pbc.CountdownTimer, pbc.AutoplayDelay,
 		boolToConfig(bgm.Enabled), string(bgm.SourceType), bgm.URL, bgm.Volume,
 		holdingMsg,
 		app.config.MDNSHostname, boolToConfig(app.config.LaunchBrowser),
 	)
 
 	return os.WriteFile(configFilePath, []byte(content), 0644)
+}
+
+// ensureTLSCerts checks if TLS certificate and key files exist.
+// If they don't, it generates self-signed certificates using Go's crypto stdlib.
+func ensureTLSCerts(certFile, keyFile string) error {
+	// Check if both files already exist
+	_, certErr := os.Stat(certFile)
+	_, keyErr := os.Stat(keyFile)
+	if certErr == nil && keyErr == nil {
+		return nil // Both exist, nothing to do
+	}
+
+	log.Printf("TLS certificates not found, generating self-signed certificates...")
+
+	// Create directory if needed
+	certDir := filepath.Dir(certFile)
+	if err := os.MkdirAll(certDir, 0755); err != nil {
+		return fmt.Errorf("create cert directory: %w", err)
+	}
+	keyDir := filepath.Dir(keyFile)
+	if keyDir != certDir {
+		if err := os.MkdirAll(keyDir, 0755); err != nil {
+			return fmt.Errorf("create key directory: %w", err)
+		}
+	}
+
+	// Generate ECDSA P-256 private key
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate private key: %w", err)
+	}
+
+	// Create certificate template
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return fmt.Errorf("generate serial number: %w", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"SongMartyn"},
+			CommonName:   "localhost",
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour), // 1 year
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+
+	// Also add all local network IPs so certs work on LAN
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				if ipNet, ok := addr.(*net.IPNet); ok {
+					template.IPAddresses = append(template.IPAddresses, ipNet.IP)
+				}
+			}
+		}
+	}
+
+	// Self-sign the certificate
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return fmt.Errorf("create certificate: %w", err)
+	}
+
+	// Write certificate PEM
+	certOut, err := os.Create(certFile)
+	if err != nil {
+		return fmt.Errorf("create cert file: %w", err)
+	}
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
+		certOut.Close()
+		return fmt.Errorf("write cert PEM: %w", err)
+	}
+	certOut.Close()
+
+	// Write private key PEM
+	keyDER, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return fmt.Errorf("marshal private key: %w", err)
+	}
+	keyOut, err := os.OpenFile(keyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create key file: %w", err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
+		keyOut.Close()
+		return fmt.Errorf("write key PEM: %w", err)
+	}
+	keyOut.Close()
+
+	log.Printf("Self-signed TLS certificates generated: %s, %s", certFile, keyFile)
+	return nil
 }
 
 // openBrowser opens the default browser to the specified URL
@@ -654,12 +837,12 @@ func main() {
 		KeyFile:       getEnv("TLS_KEY", "./certs/key.pem"),
 		YouTubeAPIKey: getEnv("YOUTUBE_API_KEY", ""),
 		VideoPlayer:   getEnv("VIDEO_PLAYER", "mpv"),
-		LaunchBrowser: getEnvBool("LAUNCH_BROWSER", false),
+		LaunchBrowser: getEnvBool("LAUNCH_BROWSER", true),
 
 		// Display settings
 		TargetDisplay:  getEnv("TARGET_DISPLAY", ""),
 		AutoFullscreen: getEnvBool("AUTO_FULLSCREEN", true),
-		VideoQuality:   getEnv("VIDEO_QUALITY", ""),
+		VideoQuality:   getEnv("VIDEO_QUALITY", "softened"),
 
 		// Feature toggles (default: all enabled)
 		PitchControlEnabled:    getEnvBool("PITCH_CONTROL_ENABLED", true),
@@ -836,7 +1019,7 @@ func NewApp(config Config) (*App, error) {
 		admin:          adminMgr,
 		library:        libraryMgr,
 		holdingScreen:  holdingScreenGen,
-		holdingMessage: getEnv("HOLDING_MESSAGE", ""),
+		holdingMessage: getEnv("HOLDING_MESSAGE", "Pick a song and sing your heart out!"),
 		ytDownloader:   ytDownloader, // nil if yt-dlp not available
 	}
 
@@ -865,6 +1048,13 @@ func NewApp(config Config) (*App, error) {
 		SourceType: models.BGMSourceType(getEnv("BGM_SOURCE", "youtube")),
 		URL:        getEnv("BGM_URL", ""),
 		Volume:     getEnvFloat("BGM_VOLUME", 50),
+	}
+
+	// Load playback config
+	app.playbackConfig = models.PlaybackConfig{
+		Mode:           models.PlaybackMode(getEnv("PLAYBACK_MODE", "admin")),
+		CountdownTimer: getEnvInt("COUNTDOWN_TIMER", 10),
+		AutoplayDelay:  getEnvInt("AUTOPLAY_DELAY", 0),
 	}
 
 	// Apply feature settings
@@ -1033,9 +1223,9 @@ func (app *App) setupHandlers() {
 			// Update holding screen if idle (don't interrupt active playback)
 			app.updateHoldingScreenIfIdle()
 
-			// Auto-start playback if this is the first song and autoplay is enabled
-			if wasEmpty && app.queue.GetAutoplay() {
-				log.Println("First song added to empty queue - starting playback in 2 seconds")
+			// Auto-start playback if this is the first song and autoplay mode is enabled
+			if wasEmpty && app.getPlaybackConfig().Mode == models.PlaybackModeAutoplay {
+				log.Println("First song added to empty queue (autoplay) - starting playback in 2 seconds")
 				// Brief delay to show "Next Up" on holding screen before playing
 				go func() {
 					time.Sleep(2 * time.Second)
@@ -1216,10 +1406,57 @@ func (app *App) setupHandlers() {
 			}
 		},
 
-		OnAutoplay: func(client *websocket.Client, enabled bool) {
-			app.queue.SetAutoplay(enabled)
-			log.Printf("Autoplay set to %v by %s", enabled, client.GetSession().DisplayName)
+		OnSetPlaybackConfig: func(client *websocket.Client, config models.PlaybackConfig) {
+			// Validate mode
+			switch config.Mode {
+			case models.PlaybackModeSinger, models.PlaybackModeAdmin, models.PlaybackModeAutoplay:
+				// valid
+			default:
+				config.Mode = models.PlaybackModeAdmin
+			}
+			if config.CountdownTimer < 3 {
+				config.CountdownTimer = 3
+			}
+			if config.CountdownTimer > 60 {
+				config.CountdownTimer = 60
+			}
+			if config.AutoplayDelay < 0 {
+				config.AutoplayDelay = 0
+			}
+			if config.AutoplayDelay > 30 {
+				config.AutoplayDelay = 30
+			}
+			app.setPlaybackConfig(config)
+			log.Printf("Playback config set to mode=%s timer=%d delay=%d by %s",
+				config.Mode, config.CountdownTimer, config.AutoplayDelay, client.GetSession().DisplayName)
+			// Persist to config file
+			saveConfigValue(map[string]string{
+				"PLAYBACK_MODE":  string(config.Mode),
+				"COUNTDOWN_TIMER": strconv.Itoa(config.CountdownTimer),
+				"AUTOPLAY_DELAY":  strconv.Itoa(config.AutoplayDelay),
+			})
 			app.broadcastState()
+		},
+
+		OnSingerStart: func(client *websocket.Client) {
+			sess := client.GetSession()
+			if sess == nil {
+				return
+			}
+			config := app.getPlaybackConfig()
+			if config.Mode != models.PlaybackModeSinger {
+				return
+			}
+			// Verify countdown is active and this is the singer's turn
+			app.countdownMu.Lock()
+			if !app.countdown.Active || app.countdown.NextSingerKey != sess.MartynKey {
+				app.countdownMu.Unlock()
+				return
+			}
+			app.countdownMu.Unlock()
+
+			log.Printf("Singer %s pressed Start — playing immediately", sess.DisplayName)
+			app.playNextSongNow()
 		},
 
 		OnQueueShuffle: func(client *websocket.Client) {
@@ -1414,7 +1651,7 @@ func (app *App) setupHandlers() {
 		OnAdminPlayNext: func(client *websocket.Client) error {
 			log.Printf("Admin %s triggered play", client.GetSession().MartynKey[:8])
 			// Start a countdown before playing (gives singer time to get ready)
-			app.startPlayCountdown(10) // 10 second countdown
+			app.startPlayCountdown(app.getPlaybackConfig().CountdownTimer)
 			return nil
 		},
 
@@ -1549,34 +1786,38 @@ func (app *App) setupHandlers() {
 		}
 
 		// Always advance the queue position (moves current song to history)
-		// Use Skip() instead of Next() because Skip() advances even at the last song
 		nextSong := app.queue.Skip()
 
-		// Check if autoplay is enabled
-		if !app.queue.GetAutoplay() {
-			log.Println("Autoplay disabled - showing holding screen, waiting for Play button")
-			// Start BGM if enabled while waiting
+		// No next song — show holding screen / BGM
+		if nextSong == nil {
 			bgmC := app.getBGMSettings()
 			if bgmC.Enabled && bgmC.URL != "" {
 				app.startBGM()
 			} else {
+				log.Println("Queue empty - showing holding screen")
 				app.showHoldingScreen()
 			}
 			app.broadcastState()
 			return
 		}
 
-		// Autoplay is enabled - continue to next song or show holding screen
-		if nextSong != nil {
-			// Start the inter-song countdown
+		// There IS a next song — behavior depends on playback mode
+		config := app.getPlaybackConfig()
+		switch config.Mode {
+		case models.PlaybackModeAutoplay:
+			log.Println("Autoplay mode - starting autoplay delay/countdown")
+			app.startAutoplayDelay(currentSingerKey)
+
+		case models.PlaybackModeSinger:
+			log.Println("Singer mode - starting countdown (singer can press Start)")
 			app.startCountdown(currentSingerKey)
-		} else {
-			// Start BGM if enabled
+
+		default: // admin mode
+			log.Println("Admin mode - showing holding screen, waiting for admin")
 			bgmC := app.getBGMSettings()
 			if bgmC.Enabled && bgmC.URL != "" {
 				app.startBGM()
 			} else {
-				log.Println("Queue empty - showing holding screen")
 				app.showHoldingScreen()
 			}
 			app.broadcastState()
@@ -1623,6 +1864,7 @@ func (app *App) getRoomState() models.RoomState {
 		Queue:     queueState,
 		Sessions:  app.sessions.GetActiveSessions(),
 		Countdown: countdownState,
+		Playback:  app.getPlaybackConfig(),
 	}
 }
 
@@ -1799,16 +2041,25 @@ func (app *App) generateHoldingScreenImage() string {
 	var nextUp *holdingscreen.NextUpInfo
 	queueState := app.queue.GetState()
 
+	// Read countdown seconds if active
+	app.countdownMu.Lock()
+	countdownSecs := 0
+	if app.countdown.Active {
+		countdownSecs = app.countdown.SecondsRemaining
+	}
+	app.countdownMu.Unlock()
+
 	// Only show "next up" if there's actually an upcoming song
 	if queueState.Position < len(queueState.Songs) {
 		nextSong := queueState.Songs[queueState.Position]
 		singer := app.sessions.Get(nextSong.AddedBy)
 
 		nextUp = &holdingscreen.NextUpInfo{
-			SongTitle:      nextSong.Title,
-			SongArtist:     nextSong.Artist,
-			SingerName:     "Unknown",
-			WaitingForHost: !app.queue.GetAutoplay(),
+			SongTitle:        nextSong.Title,
+			SongArtist:       nextSong.Artist,
+			SingerName:       "Unknown",
+			WaitingForHost:   app.getPlaybackConfig().Mode == models.PlaybackModeAdmin,
+			CountdownSeconds: countdownSecs,
 		}
 		if singer != nil {
 			nextUp.SingerName = singer.DisplayName
@@ -1848,6 +2099,14 @@ func (app *App) showHoldingScreen() {
 	var nextUp *holdingscreen.NextUpInfo
 	queueState := app.queue.GetState()
 
+	// Read countdown seconds if active
+	app.countdownMu.Lock()
+	countdownSecs := 0
+	if app.countdown.Active {
+		countdownSecs = app.countdown.SecondsRemaining
+	}
+	app.countdownMu.Unlock()
+
 	// Only show "next up" if there's actually an upcoming song
 	// (position must be within bounds - not exhausted/in history)
 	if queueState.Position < len(queueState.Songs) {
@@ -1855,10 +2114,11 @@ func (app *App) showHoldingScreen() {
 		singer := app.sessions.Get(nextSong.AddedBy)
 
 		nextUp = &holdingscreen.NextUpInfo{
-			SongTitle:      nextSong.Title,
-			SongArtist:     nextSong.Artist,
-			SingerName:     "Unknown",
-			WaitingForHost: !app.queue.GetAutoplay(),
+			SongTitle:        nextSong.Title,
+			SongArtist:       nextSong.Artist,
+			SingerName:       "Unknown",
+			WaitingForHost:   app.getPlaybackConfig().Mode == models.PlaybackModeAdmin,
+			CountdownSeconds: countdownSecs,
 		}
 		if singer != nil {
 			nextUp.SingerName = singer.DisplayName
@@ -1903,7 +2163,8 @@ func (app *App) updateHoldingScreenIfIdle() {
 	}
 }
 
-// cancelCountdownLocked cancels any running countdown goroutine. Must be called with countdownMu held.
+// cancelCountdownLocked cancels any running countdown or autoplay delay goroutine.
+// Must be called with countdownMu held.
 func (app *App) cancelCountdownLocked() {
 	if app.countdownTicker != nil {
 		app.countdownTicker.Stop()
@@ -1913,14 +2174,25 @@ func (app *App) cancelCountdownLocked() {
 		app.countdownCancel() // idempotent — safe to call multiple times
 		app.countdownCancel = nil
 	}
+	if app.autoplayDelayCancel != nil {
+		app.autoplayDelayCancel()
+		app.autoplayDelayCancel = nil
+	}
 }
 
-// startCountdown starts the inter-song countdown
-// currentSingerKey is the MartynKey of the singer who just finished
+// startCountdown starts the inter-song countdown using the configured timer.
+// All modes auto-play when countdown reaches 0.
+// In singer mode, the singer can press Start to skip the remaining countdown.
 func (app *App) startCountdown(currentSingerKey string) {
+	config := app.getPlaybackConfig()
+	seconds := config.CountdownTimer
+	if seconds <= 0 {
+		seconds = 10
+	}
+
 	app.countdownMu.Lock()
 
-	// Stop any existing countdown
+	// Stop any existing countdown or delay
 	app.cancelCountdownLocked()
 
 	// Get the next song
@@ -1931,16 +2203,12 @@ func (app *App) startCountdown(currentSingerKey string) {
 		return
 	}
 
-	// Check if next singer is same as current
-	requiresApproval := nextSong.AddedBy != currentSingerKey
-
 	// Initialize countdown state
 	app.countdown = models.CountdownState{
 		Active:           true,
-		SecondsRemaining: 15,
+		SecondsRemaining: seconds,
 		NextSongID:       nextSong.ID,
 		NextSingerKey:    nextSong.AddedBy,
-		RequiresApproval: requiresApproval,
 	}
 
 	// Create ticker and cancellable context
@@ -1948,13 +2216,12 @@ func (app *App) startCountdown(currentSingerKey string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	app.countdownCancel = cancel
 
-	log.Printf("Starting 15-second countdown for next song (requires approval: %v)", requiresApproval)
+	log.Printf("Starting %d-second countdown for next song (mode: %s)", seconds, config.Mode)
 
 	// Capture ticker locally before releasing mutex — stopCountdown() can nil the field
 	ticker := app.countdownTicker
 
 	// Unlock BEFORE calling broadcastState to avoid deadlock
-	// (broadcastState -> getRoomState -> countdownMu.Lock would deadlock)
 	app.countdownMu.Unlock()
 
 	// Show holding screen with next up info
@@ -1976,29 +2243,50 @@ func (app *App) startCountdown(currentSingerKey string) {
 				app.countdown.SecondsRemaining--
 
 				if app.countdown.SecondsRemaining <= 0 {
-					// Countdown finished
-					if !app.countdown.RequiresApproval {
-						// Same user - auto-play
-						log.Println("Countdown finished - auto-playing next song (same user)")
-						app.countdown.Active = false
-						app.countdownMu.Unlock()
-						app.playNextSongNow()
-						return
-					} else {
-						// Different user - wait for admin approval
-						log.Println("Countdown finished - waiting for admin approval (different user)")
-						app.countdown.SecondsRemaining = 0
-						app.countdownMu.Unlock()
-						// Broadcast AFTER releasing lock to avoid deadlock
-						app.broadcastState()
-						return
-					}
+					// Countdown finished — auto-play in all modes
+					log.Println("Countdown finished - auto-playing next song")
+					app.countdown.Active = false
+					app.countdownMu.Unlock()
+					app.playNextSongNow()
+					return
 				}
 
 				app.countdownMu.Unlock()
-				// Broadcast AFTER releasing lock to avoid deadlock
+				// Update holding screen with new countdown number, then broadcast
+				app.showHoldingScreen()
 				app.broadcastState()
 			}
+		}
+	}()
+}
+
+// startAutoplayDelay waits for the configured autoplay delay, then starts the countdown.
+// Shows holding screen during the delay period.
+func (app *App) startAutoplayDelay(currentSingerKey string) {
+	config := app.getPlaybackConfig()
+	delay := config.AutoplayDelay
+	if delay <= 0 {
+		app.startCountdown(currentSingerKey)
+		return
+	}
+
+	log.Printf("Autoplay delay: waiting %d seconds before countdown", delay)
+
+	// Show holding screen during delay
+	app.showHoldingScreen()
+	app.broadcastState()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	app.countdownMu.Lock()
+	app.autoplayDelayCancel = cancel
+	app.countdownMu.Unlock()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(delay) * time.Second):
+			app.startCountdown(currentSingerKey)
 		}
 	}()
 }
@@ -2049,13 +2337,12 @@ func (app *App) startPlayCountdown(seconds int) {
 		return
 	}
 
-	// Initialize countdown state - RequiresApproval=false means it will auto-play
+	// Initialize countdown state
 	app.countdown = models.CountdownState{
 		Active:           true,
 		SecondsRemaining: seconds,
 		NextSongID:       nextSong.ID,
 		NextSingerKey:    nextSong.AddedBy,
-		RequiresApproval: false, // Admin initiated, will auto-play
 	}
 	log.Printf("[DEBUG] Countdown state set: Active=%v, Seconds=%d", app.countdown.Active, app.countdown.SecondsRemaining)
 
@@ -2104,6 +2391,8 @@ func (app *App) startPlayCountdown(seconds int) {
 				}
 
 				app.countdownMu.Unlock()
+				// Update holding screen with new countdown number, then broadcast
+				app.showHoldingScreen()
 				app.broadcastState()
 			}
 		}
@@ -2522,6 +2811,11 @@ func (app *App) Run() {
 			log.Printf("HTTP redirect server error: %v", err)
 		}
 	}()
+
+	// Ensure TLS certificates exist (auto-generate if missing)
+	if err := ensureTLSCerts(app.config.CertFile, app.config.KeyFile); err != nil {
+		log.Fatalf("Failed to ensure TLS certificates: %v", err)
+	}
 
 	// Start HTTPS server
 	log.Printf("TLS enabled with cert: %s, key: %s", app.config.CertFile, app.config.KeyFile)

@@ -5,6 +5,7 @@ import type {
   PlayerState,
   QueueState,
   CountdownState,
+  PlaybackConfig,
   Song,
   VocalAssistLevel,
 } from '../types';
@@ -36,6 +37,9 @@ interface RoomStore {
 
   // Countdown state (inter-song)
   countdown: CountdownState;
+
+  // Playback config
+  playback: PlaybackConfig;
 
   // Other connected sessions
   sessions: Session[];
@@ -72,7 +76,6 @@ const initialPlayerState: PlayerState = {
 const initialQueueState: QueueState = {
   songs: [],
   position: 0,
-  autoplay: false,
 };
 
 const initialCountdownState: CountdownState = {
@@ -80,7 +83,12 @@ const initialCountdownState: CountdownState = {
   seconds_remaining: 0,
   next_song_id: '',
   next_singer_key: '',
-  requires_approval: false,
+};
+
+const initialPlaybackConfig: PlaybackConfig = {
+  mode: 'admin',
+  countdown_timer: 10,
+  autoplay_delay: 0,
 };
 
 export const useRoomStore = create<RoomStore>((set) => ({
@@ -93,6 +101,7 @@ export const useRoomStore = create<RoomStore>((set) => ({
   player: initialPlayerState,
   queue: initialQueueState,
   countdown: initialCountdownState,
+  playback: initialPlaybackConfig,
   sessions: [],
   notifications: [],
 
@@ -133,6 +142,7 @@ export const useRoomStore = create<RoomStore>((set) => ({
         player: state.player,
         queue,
         countdown: state.countdown || initialCountdownState,
+        playback: state.playback || initialPlaybackConfig,
         sessions,
         session: updatedSession,
       };
@@ -198,8 +208,8 @@ export const selectQueue = (state: RoomStore): Song[] => state.queue.songs;
 export const selectQueuePosition = (state: RoomStore): number =>
   state.queue.position;
 
-export const selectAutoplay = (state: RoomStore): boolean =>
-  state.queue.autoplay;
+export const selectPlaybackConfig = (state: RoomStore): PlaybackConfig =>
+  state.playback;
 
 export const selectCountdown = (state: RoomStore): CountdownState =>
   state.countdown;

@@ -299,6 +299,11 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
     } : undefined;
     wsService.queueAdd(String(song.id), vocalAssist, meta);
 
+    // Request browser notification permission (no-op if already granted/denied)
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
     // Show notification
     roomStore.addNotification('success', `Added "${song.title}" to queue`);
   },

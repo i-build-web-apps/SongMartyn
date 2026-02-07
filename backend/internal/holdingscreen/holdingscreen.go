@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -64,6 +65,9 @@ type Generator struct {
 	logoImage    image.Image
 	tempDir      string
 	avatarAPIURL string
+	// Cached QR code to avoid re-fetching during countdown
+	cachedQR    image.Image
+	cachedQRURL string
 }
 
 // NewGenerator creates a new holding screen generator
@@ -93,11 +97,12 @@ func NewGenerator(tempDir, avatarAPIURL string) (*Generator, error) {
 
 // NextUpInfo contains information about the next song and singer
 type NextUpInfo struct {
-	SongTitle      string
-	SongArtist     string
-	SingerName     string
-	AvatarConfig   *models.AvatarConfig
-	WaitingForHost bool // true when autoplay is off and host must press play
+	SongTitle        string
+	SongArtist       string
+	SingerName       string
+	AvatarConfig     *models.AvatarConfig
+	WaitingForHost   bool // true when autoplay is off and host must press play
+	CountdownSeconds int  // 0 = no countdown, >0 = seconds remaining
 }
 
 // Generate creates a holding screen image and returns the file path
@@ -121,6 +126,11 @@ func (g *Generator) Generate(connectURL string, nextUp *NextUpInfo, message stri
 
 	// Draw "Next Up" section (bottom right) - always show, with placeholder if no song
 	g.drawNextUpSection(dc, nextUp)
+
+	// Draw film leader countdown if active
+	if nextUp != nil && nextUp.CountdownSeconds > 0 {
+		g.drawFilmCountdown(dc, nextUp.CountdownSeconds)
+	}
 
 	// Save to temp file
 	outputPath := filepath.Join(g.tempDir, "holding-screen.png")
@@ -226,13 +236,19 @@ func (g *Generator) drawQRSection(dc *gg.Context, connectURL string) {
 	dc.DrawRoundedRectangle(qrX-boxPadding, qrY-boxPadding-40, float64(qrSize)+boxPadding*2+320, float64(qrSize)+boxPadding*2+50, 16)
 	dc.Fill()
 
-	// Fetch QR code
+	// Fetch QR code (cached to avoid re-fetching during countdown)
 	qrURL := fmt.Sprintf("https://api.qrserver.com/v1/create-qr-code/?size=%dx%d&data=%s&bgcolor=ffffff&color=000000",
 		qrSize, qrSize, url.QueryEscape(connectURL))
 
-	qrImg, err := fetchImage(qrURL)
-	if err == nil && qrImg != nil {
-		dc.DrawImage(qrImg, int(qrX), int(qrY))
+	if g.cachedQRURL != qrURL || g.cachedQR == nil {
+		if img, err := fetchImage(qrURL); err == nil && img != nil {
+			g.cachedQR = img
+			g.cachedQRURL = qrURL
+		}
+	}
+
+	if g.cachedQR != nil {
+		dc.DrawImage(g.cachedQR, int(qrX), int(qrY))
 	} else {
 		// Fallback placeholder
 		dc.SetRGBA(1, 1, 1, 0.3)
@@ -351,6 +367,89 @@ func (g *Generator) drawNextUpSection(dc *gg.Context, nextUp *NextUpInfo) {
 		if err := loadFont(dc, 24); err == nil {
 			dc.DrawString("Scan QR code to add a song!", textX, boxY+innerPadding+115)
 		}
+	}
+}
+
+// drawFilmCountdown draws a classic film leader countdown in the center of the screen
+// Inspired by SMPTE Universal Leader — circle with tick marks and a sweeping arc
+func (g *Generator) drawFilmCountdown(dc *gg.Context, seconds int) {
+	cx := float64(canvasWidth) / 2
+	cy := float64(canvasHeight)/2 - 30 // Slightly above center (bottom has info panels)
+	radius := 180.0
+	innerRadius := radius - 15
+
+	// Dark backdrop circle for contrast
+	dc.SetRGBA(0, 0, 0, 0.75)
+	dc.DrawCircle(cx, cy, radius+40)
+	dc.Fill()
+
+	// Outer ring
+	dc.SetLineWidth(4)
+	dc.SetColor(color.RGBA{200, 200, 200, 200}) // Light gray
+	dc.DrawCircle(cx, cy, radius)
+	dc.Stroke()
+
+	// Inner ring
+	dc.SetLineWidth(2)
+	dc.SetColor(color.RGBA{120, 120, 120, 180})
+	dc.DrawCircle(cx, cy, innerRadius)
+	dc.Stroke()
+
+	// Tick marks around the circle (like a clock face)
+	numTicks := 24
+	for i := 0; i < numTicks; i++ {
+		angle := float64(i) * 2 * math.Pi / float64(numTicks) - math.Pi/2
+		tickOuter := radius - 2
+		tickInner := radius - 18
+		if i%6 == 0 {
+			// Major ticks (at 12, 3, 6, 9 o'clock)
+			dc.SetLineWidth(3)
+			dc.SetColor(color.RGBA{220, 220, 220, 220})
+			tickInner = radius - 28
+		} else {
+			dc.SetLineWidth(1.5)
+			dc.SetColor(color.RGBA{150, 150, 150, 160})
+		}
+		x1 := cx + tickInner*math.Cos(angle)
+		y1 := cy + tickInner*math.Sin(angle)
+		x2 := cx + tickOuter*math.Cos(angle)
+		y2 := cy + tickOuter*math.Sin(angle)
+		dc.DrawLine(x1, y1, x2, y2)
+		dc.Stroke()
+	}
+
+	// Sweeping arc — shows elapsed portion of current second
+	// The arc sweeps from 12 o'clock clockwise
+	// Full circle represents one full second; drawn as a wedge
+	dc.SetColor(yellowColor)
+	dc.SetLineWidth(8)
+	startAngle := -math.Pi / 2 // 12 o'clock
+	endAngle := startAngle + 2*math.Pi
+	dc.DrawArc(cx, cy, innerRadius-10, startAngle, endAngle)
+	dc.Stroke()
+
+	// Cross-hairs (classic film leader element)
+	dc.SetLineWidth(1.5)
+	dc.SetColor(color.RGBA{100, 100, 100, 140})
+	dc.DrawLine(cx-radius+30, cy, cx+radius-30, cy)
+	dc.Stroke()
+	dc.DrawLine(cx, cy-radius+30, cx, cy+radius-30)
+	dc.Stroke()
+
+	// Big countdown number
+	dc.SetColor(whiteColor)
+	if err := loadFont(dc, 160); err == nil {
+		numStr := fmt.Sprintf("%d", seconds)
+		tw, th := dc.MeasureString(numStr)
+		dc.DrawString(numStr, cx-tw/2, cy+th/3)
+	}
+
+	// Small "GET READY" text below the circle
+	dc.SetColor(yellowColor)
+	if err := loadFont(dc, 28); err == nil {
+		label := "GET READY"
+		tw, _ := dc.MeasureString(label)
+		dc.DrawString(label, cx-tw/2, cy+radius+55)
 	}
 }
 

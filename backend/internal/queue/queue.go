@@ -16,7 +16,6 @@ type Manager struct {
 	db           *sql.DB
 	songs        []models.Song
 	position     int
-	autoplay     bool
 	fairRotation bool // Use round-robin queue instead of FIFO
 	mu           sync.RWMutex
 
@@ -58,23 +57,19 @@ func NewManager(dbPath string) (*Manager, error) {
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS queue_state (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
-			position INTEGER DEFAULT 0,
-			autoplay INTEGER DEFAULT 0
+			position INTEGER DEFAULT 0
 		)
 	`)
 	if err != nil {
 		return nil, err
 	}
 
-	// Add autoplay column if it doesn't exist (migration for existing DBs)
-	db.Exec(`ALTER TABLE queue_state ADD COLUMN autoplay INTEGER DEFAULT 0`)
-
 	// Add CDG/audio columns if they don't exist (migration for existing DBs)
 	db.Exec(`ALTER TABLE queue ADD COLUMN cdg_path TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE queue ADD COLUMN audio_path TEXT DEFAULT ''`)
 
-	// Initialize state if not exists (autoplay defaults to OFF)
-	db.Exec(`INSERT OR IGNORE INTO queue_state (id, position, autoplay) VALUES (1, 0, 0)`)
+	// Initialize state if not exists
+	db.Exec(`INSERT OR IGNORE INTO queue_state (id, position) VALUES (1, 0)`)
 
 	m := &Manager{
 		db:    db,
@@ -86,20 +81,14 @@ func NewManager(dbPath string) (*Manager, error) {
 		return nil, err
 	}
 
-	// Always start with autoplay OFF - requires manual toggle each session
-	m.autoplay = false
-	m.db.Exec(`UPDATE queue_state SET autoplay = 0 WHERE id = 1`)
-
 	return m, nil
 }
 
 // loadQueue loads the queue from SQLite
 func (m *Manager) loadQueue() error {
-	// Load position and autoplay
-	var autoplayInt int
-	row := m.db.QueryRow(`SELECT position, COALESCE(autoplay, 0) FROM queue_state WHERE id = 1`)
-	row.Scan(&m.position, &autoplayInt)
-	m.autoplay = autoplayInt == 1
+	// Load position
+	row := m.db.QueryRow(`SELECT position FROM queue_state WHERE id = 1`)
+	row.Scan(&m.position)
 
 	// Load songs
 	rows, err := m.db.Query(`
@@ -536,27 +525,6 @@ func (m *Manager) GetState() models.QueueState {
 	return models.QueueState{
 		Songs:    m.songs,
 		Position: m.position,
-		Autoplay: m.autoplay,
-	}
-}
-
-// GetAutoplay returns the current autoplay setting
-func (m *Manager) GetAutoplay() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.autoplay
-}
-
-// SetAutoplay sets the autoplay setting
-func (m *Manager) SetAutoplay(enabled bool) {
-	m.mu.Lock()
-	m.autoplay = enabled
-	m.db.Exec(`UPDATE queue_state SET autoplay = ? WHERE id = 1`, btoi(enabled))
-	onChange := m.onChange
-	m.mu.Unlock()
-
-	if onChange != nil {
-		onChange()
 	}
 }
 
@@ -573,14 +541,6 @@ func (m *Manager) GetFairRotation() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.fairRotation
-}
-
-// btoi converts bool to int for SQLite
-func btoi(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // IsEmpty returns true if the queue is empty or exhausted
