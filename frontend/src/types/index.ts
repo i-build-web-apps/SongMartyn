@@ -30,6 +30,8 @@ export interface Song {
   tempo_change: number;    // Speed multiplier (0.5 to 2.0, 1.0 = normal)
   added_by: string;
   added_at: string;
+  download_status?: 'pending' | 'downloading' | 'ready' | 'failed';
+  download_progress?: number;
 }
 
 // Avatar custom colors (optional overrides)

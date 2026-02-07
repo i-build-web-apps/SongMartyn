@@ -41,7 +41,7 @@ export const useLibraryStore = create<LibraryStore>((set) => ({
         headers: getAuthHeaders(),
       });
       if (res.ok) {
-        const locations: LibraryLocation[] = await res.json();
+        const locations: LibraryLocation[] = (await res.json()) ?? [];
         set({ locations, isLoading: false });
       } else {
         set({ error: 'Failed to fetch locations', isLoading: false });
@@ -121,7 +121,7 @@ export const useLibraryStore = create<LibraryStore>((set) => ({
           headers: getAuthHeaders(),
         });
         if (locRes.ok) {
-          const locations: LibraryLocation[] = await locRes.json();
+          const locations: LibraryLocation[] = (await locRes.json()) ?? [];
           set({ locations, isLoading: false });
         }
         return data.songs_found;

@@ -22,21 +22,23 @@ var VocalGainMap = map[VocalAssistLevel]float64{
 
 // Song represents a queued karaoke track
 type Song struct {
-	ID           string           `json:"id"`
-	Title        string           `json:"title"`
-	Artist       string           `json:"artist"`
-	Duration     int              `json:"duration"` // seconds
-	ThumbnailURL string           `json:"thumbnail_url"`
-	VideoURL     string           `json:"video_url"`
-	VocalPath    string           `json:"vocal_path,omitempty"`    // Path to extracted vocals
-	InstrPath    string           `json:"instr_path,omitempty"`    // Path to instrumental
-	CDGPath      string           `json:"cdg_path,omitempty"`      // Path to CDG graphics file
-	AudioPath    string           `json:"audio_path,omitempty"`    // Path to audio file (for CDG)
-	VocalAssist  VocalAssistLevel `json:"vocal_assist"`
-	KeyChange    int              `json:"key_change"`              // Semitones (-12 to +12)
-	TempoChange  float64          `json:"tempo_change"`            // Speed multiplier (0.5 to 2.0, 1.0 = normal)
-	AddedBy      string           `json:"added_by"`                // MartynKey of who added it
-	AddedAt      time.Time        `json:"added_at"`
+	ID               string           `json:"id"`
+	Title            string           `json:"title"`
+	Artist           string           `json:"artist"`
+	Duration         int              `json:"duration"` // seconds
+	ThumbnailURL     string           `json:"thumbnail_url"`
+	VideoURL         string           `json:"video_url"`
+	VocalPath        string           `json:"vocal_path,omitempty"` // Path to extracted vocals
+	InstrPath        string           `json:"instr_path,omitempty"` // Path to instrumental
+	CDGPath          string           `json:"cdg_path,omitempty"`   // Path to CDG graphics file
+	AudioPath        string           `json:"audio_path,omitempty"` // Path to audio file (for CDG)
+	VocalAssist      VocalAssistLevel `json:"vocal_assist"`
+	KeyChange        int              `json:"key_change"`   // Semitones (-12 to +12)
+	TempoChange      float64          `json:"tempo_change"` // Speed multiplier (0.5 to 2.0, 1.0 = normal)
+	AddedBy          string           `json:"added_by"`     // MartynKey of who added it
+	AddedAt          time.Time        `json:"added_at"`
+	DownloadStatus   string           `json:"download_status,omitempty"`   // pending/downloading/ready/failed
+	DownloadProgress float64          `json:"download_progress,omitempty"` // 0-100
 }
 
 // AvatarColors represents custom color overrides for avatar parts
@@ -62,37 +64,37 @@ type AvatarConfig struct {
 
 // Session represents a connected client session (The Martyn Handshake)
 type Session struct {
-	MartynKey      string           `json:"martyn_key"` // UUID
-	DisplayName    string           `json:"display_name"`
-	AvatarID       string           `json:"avatar_id,omitempty"`     // Legacy pixel avatar identifier
-	AvatarConfig   *AvatarConfig    `json:"avatar_config,omitempty"` // Multiavatar configuration
-	VocalAssist    VocalAssistLevel `json:"vocal_assist"`
-	SearchHistory  []string         `json:"search_history"`
-	Favorites      []string         `json:"favorites"`               // Favorite song IDs
-	CurrentSongID  string           `json:"current_song_id,omitempty"`
-	ConnectedAt    time.Time        `json:"connected_at"`
-	LastSeenAt     time.Time        `json:"last_seen_at"`
+	MartynKey     string           `json:"martyn_key"` // UUID
+	DisplayName   string           `json:"display_name"`
+	AvatarID      string           `json:"avatar_id,omitempty"`     // Legacy pixel avatar identifier
+	AvatarConfig  *AvatarConfig    `json:"avatar_config,omitempty"` // Multiavatar configuration
+	VocalAssist   VocalAssistLevel `json:"vocal_assist"`
+	SearchHistory []string         `json:"search_history"`
+	Favorites     []string         `json:"favorites"` // Favorite song IDs
+	CurrentSongID string           `json:"current_song_id,omitempty"`
+	ConnectedAt   time.Time        `json:"connected_at"`
+	LastSeenAt    time.Time        `json:"last_seen_at"`
 	// Admin panel fields
-	IPAddress      string           `json:"ip_address"`
-	DeviceName     string           `json:"device_name"`     // Auto-detected or custom
-	UserAgent      string           `json:"user_agent"`
-	IsAdmin        bool             `json:"is_admin"`
-	IsOnline       bool             `json:"is_online"`       // Currently connected
-	IsAFK          bool             `json:"is_afk"`          // Away from keyboard
-	NameLocked     bool             `json:"name_locked"`     // Admin locked the display name
+	IPAddress  string `json:"ip_address"`
+	DeviceName string `json:"device_name"` // Auto-detected or custom
+	UserAgent  string `json:"user_agent"`
+	IsAdmin    bool   `json:"is_admin"`
+	IsOnline   bool   `json:"is_online"`   // Currently connected
+	IsAFK      bool   `json:"is_afk"`      // Away from keyboard
+	NameLocked bool   `json:"name_locked"` // Admin locked the display name
 }
 
 // PlayerState represents the current playback state
 type PlayerState struct {
-	CurrentSong   *Song            `json:"current_song"`
-	Position      float64          `json:"position"`      // seconds
-	Duration      float64          `json:"duration"`      // seconds
-	IsPlaying     bool             `json:"is_playing"`
-	Volume        float64          `json:"volume"`        // 0-100
-	VocalAssist   VocalAssistLevel `json:"vocal_assist"`
-	BGMActive     bool             `json:"bgm_active"`    // Background music playing
-	BGMEnabled    bool             `json:"bgm_enabled"`   // BGM feature enabled
-	Idle          bool             `json:"idle"`          // Showing holding screen (not playing a song)
+	CurrentSong *Song            `json:"current_song"`
+	Position    float64          `json:"position"` // seconds
+	Duration    float64          `json:"duration"` // seconds
+	IsPlaying   bool             `json:"is_playing"`
+	Volume      float64          `json:"volume"` // 0-100
+	VocalAssist VocalAssistLevel `json:"vocal_assist"`
+	BGMActive   bool             `json:"bgm_active"`  // Background music playing
+	BGMEnabled  bool             `json:"bgm_enabled"` // BGM feature enabled
+	Idle        bool             `json:"idle"`        // Showing holding screen (not playing a song)
 }
 
 // BGMSourceType represents the type of background music source
@@ -130,11 +132,11 @@ type QueueState struct {
 
 // CountdownState represents the inter-song countdown
 type CountdownState struct {
-	Active           bool   `json:"active"`             // Countdown is running
-	SecondsRemaining int    `json:"seconds_remaining"`  // Seconds until auto-play
-	NextSongID       string `json:"next_song_id"`       // ID of next song
-	NextSingerKey    string `json:"next_singer_key"`    // MartynKey of next singer
-	RequiresApproval bool   `json:"requires_approval"`  // Admin must start (different user)
+	Active           bool   `json:"active"`            // Countdown is running
+	SecondsRemaining int    `json:"seconds_remaining"` // Seconds until auto-play
+	NextSongID       string `json:"next_song_id"`      // ID of next song
+	NextSingerKey    string `json:"next_singer_key"`   // MartynKey of next singer
+	RequiresApproval bool   `json:"requires_approval"` // Admin must start (different user)
 }
 
 // RoomState represents the entire room state
@@ -149,7 +151,7 @@ type RoomState struct {
 type LibraryLocation struct {
 	ID        int64     `json:"id"`
 	Path      string    `json:"path"`
-	Name      string    `json:"name"`      // Friendly name
+	Name      string    `json:"name"` // Friendly name
 	SongCount int       `json:"song_count"`
 	AddedAt   time.Time `json:"added_at"`
 	LastScan  time.Time `json:"last_scan"`
@@ -157,23 +159,23 @@ type LibraryLocation struct {
 
 // LibrarySong represents a song in the local library
 type LibrarySong struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	Artist       string    `json:"artist"`
-	Album        string    `json:"album,omitempty"`
-	Duration     int       `json:"duration"`      // seconds
-	FilePath     string    `json:"file_path"`
-	ThumbnailURL string    `json:"thumbnail_url,omitempty"`
-	VocalPath    string    `json:"vocal_path,omitempty"`
-	InstrPath    string    `json:"instr_path,omitempty"`
-	CDGPath      string    `json:"cdg_path,omitempty"`   // Path to CDG graphics file
-	AudioPath    string    `json:"audio_path,omitempty"` // Path to audio file (for CDG)
-	LibraryID    int64     `json:"library_id"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Artist       string `json:"artist"`
+	Album        string `json:"album,omitempty"`
+	Duration     int    `json:"duration"` // seconds
+	FilePath     string `json:"file_path"`
+	ThumbnailURL string `json:"thumbnail_url,omitempty"`
+	VocalPath    string `json:"vocal_path,omitempty"`
+	InstrPath    string `json:"instr_path,omitempty"`
+	CDGPath      string `json:"cdg_path,omitempty"`   // Path to CDG graphics file
+	AudioPath    string `json:"audio_path,omitempty"` // Path to audio file (for CDG)
+	LibraryID    int64  `json:"library_id"`
 	// Stats
-	TimesSung    int       `json:"times_sung"`
-	LastSungAt   *time.Time `json:"last_sung_at,omitempty"`
-	LastSungBy   string    `json:"last_sung_by,omitempty"` // MartynKey
-	AddedAt      time.Time `json:"added_at"`
+	TimesSung  int        `json:"times_sung"`
+	LastSungAt *time.Time `json:"last_sung_at,omitempty"`
+	LastSungBy string     `json:"last_sung_by,omitempty"` // MartynKey
+	AddedAt    time.Time  `json:"added_at"`
 }
 
 // SongHistory tracks when a user sang a song
@@ -197,9 +199,9 @@ const (
 
 // FeatureSettings holds toggleable feature flags
 type FeatureSettings struct {
-	PitchControlEnabled   bool      `json:"pitch_control_enabled"`   // Allow key/pitch changes
-	TempoControlEnabled   bool      `json:"tempo_control_enabled"`   // Allow tempo/speed changes
-	FairRotationEnabled   bool      `json:"fair_rotation_enabled"`   // Use round-robin queue instead of FIFO
-	ScrollingTickerEnabled bool     `json:"scrolling_ticker_enabled"` // Show upcoming singers ticker on display
-	SingerNameOverlay     bool      `json:"singer_name_overlay"`      // Show singer name at start of songs
+	PitchControlEnabled    bool `json:"pitch_control_enabled"`    // Allow key/pitch changes
+	TempoControlEnabled    bool `json:"tempo_control_enabled"`    // Allow tempo/speed changes
+	FairRotationEnabled    bool `json:"fair_rotation_enabled"`    // Use round-robin queue instead of FIFO
+	ScrollingTickerEnabled bool `json:"scrolling_ticker_enabled"` // Show upcoming singers ticker on display
+	SingerNameOverlay      bool `json:"singer_name_overlay"`      // Show singer name at start of songs
 }

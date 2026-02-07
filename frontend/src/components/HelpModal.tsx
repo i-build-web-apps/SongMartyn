@@ -167,6 +167,52 @@ After installing, use the "Install mpv" button to verify the installation. If it
     ],
   },
 
+  ytdlp: {
+    title: 'YouTube Downloads (yt-dlp)',
+    sections: [
+      {
+        heading: 'What is this?',
+        content: `yt-dlp is a free, open-source tool that downloads videos from YouTube. SongMartyn uses it to download YouTube search results so they can be played through mpv.
+
+Without yt-dlp installed, YouTube search still works but you won't be able to queue and play YouTube songs.`,
+      },
+      {
+        heading: 'Installation',
+        content: `Install yt-dlp using your system's package manager:
+
+- **macOS**: \`brew install yt-dlp\`
+- **Linux (Debian/Ubuntu)**: \`sudo apt install yt-dlp\`
+- **Linux (Arch)**: \`sudo pacman -S yt-dlp\`
+- **Windows**: \`choco install yt-dlp\` or \`winget install yt-dlp\`
+- **Python (any OS)**: \`pip install yt-dlp\`
+
+After installing, restart SongMartyn and check the Diagnostics tab to verify it's detected.`,
+        links: [
+          { label: 'yt-dlp GitHub', url: 'https://github.com/yt-dlp/yt-dlp' },
+          { label: 'yt-dlp Installation Guide', url: 'https://github.com/yt-dlp/yt-dlp#installation' },
+        ],
+      },
+      {
+        heading: 'How Downloads Work',
+        content: `When you queue a YouTube song:
+1. The download starts immediately in the background
+2. Progress is shown in the queue with a progress bar
+3. When the download finishes, the song plays automatically
+4. Downloaded files are cached so re-queuing the same video is instant
+
+Downloads are stored in the \`youtube-cache\` folder inside your data directory.`,
+      },
+      {
+        heading: 'Troubleshooting',
+        content: `
+- **"yt-dlp not installed"**: Follow the installation steps above and restart
+- **Downloads fail**: Make sure yt-dlp is up to date (\`yt-dlp -U\`)
+- **Slow downloads**: This depends on your internet connection speed
+- **Cache cleanup**: Delete files in the \`youtube-cache\` folder to free disk space`,
+      },
+    ],
+  },
+
   library: {
     title: 'Song Library Management',
     sections: [

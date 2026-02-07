@@ -78,6 +78,7 @@ function MyComponent() {
 | `adminPin` | Admin PIN & remote access | Settings > Admin PIN |
 | `videoPlayer` | mpv player setup | Settings > Video Player Path |
 | `library` | Song library management | Library tab |
+| `ytdlp` | YouTube downloads (yt-dlp) setup | Settings > YouTube API Key |
 
 ### Future Features Requiring Help Modals
 

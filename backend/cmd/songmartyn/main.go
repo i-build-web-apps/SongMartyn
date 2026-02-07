@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,7 +23,6 @@ import (
 	"time"
 
 	"github.com/grandcat/zeroconf"
-	"github.com/joho/godotenv"
 
 	"songmartyn/internal/admin"
 	"songmartyn/internal/avatar"
@@ -33,6 +33,7 @@ import (
 	"songmartyn/internal/queue"
 	"songmartyn/internal/session"
 	"songmartyn/internal/websocket"
+	"songmartyn/internal/ytdl"
 	"songmartyn/pkg/models"
 )
 
@@ -56,6 +57,7 @@ type Config struct {
 	// Display settings
 	TargetDisplay  string // Name of display to use for video player
 	AutoFullscreen bool   // Automatically fullscreen the player on startup
+	VideoQuality   string // Video quality mode: "" (off), "enhanced", "softened"
 
 	// Feature toggles
 	PitchControlEnabled    bool
@@ -74,6 +76,8 @@ type DiagnosticsInfo struct {
 	Displays        []DisplayInfo `json:"displays"`
 	FirewallEnabled bool          `json:"firewall_enabled"`
 	FirewallStatus  string        `json:"firewall_status"`
+	YtDlpInstalled  bool          `json:"ytdlp_installed"`
+	YtDlpVersion    string        `json:"ytdlp_version"`
 }
 
 // PortCheck represents a network port status check
@@ -105,12 +109,19 @@ type App struct {
 	library       *library.Manager
 	holdingScreen *holdingscreen.Generator
 
-	// BGM (Background Music) state
+	// YouTube download manager (nil if yt-dlp not installed)
+	ytDownloader     *ytdl.Downloader
+	ytDownloadCancel func() // cancels the current YT download-wait goroutine
+
+	// BGM (Background Music) state — protected by stateMu
 	bgmSettings models.BGMSettings
 	bgmActive   bool
 
-	// Idle state (showing holding screen, not playing a song)
+	// Idle state (showing holding screen, not playing a song) — protected by stateMu
 	idle bool
+
+	// stateMu protects bgmActive, idle, bgmSettings from concurrent access
+	stateMu sync.RWMutex
 
 	// Holding screen message (admin-controlled)
 	holdingMessage   string
@@ -119,7 +130,7 @@ type App struct {
 	// Inter-song countdown state
 	countdown       models.CountdownState
 	countdownTicker *time.Ticker
-	countdownStop   chan struct{}
+	countdownCancel context.CancelFunc // idempotent — safe to call multiple times
 	countdownMu     sync.Mutex
 
 	// System diagnostics (cached at startup)
@@ -128,6 +139,44 @@ type App struct {
 
 	// mDNS server for local discovery
 	mdnsServer *zeroconf.Server
+}
+
+// Thread-safe accessors for fields protected by stateMu
+
+func (app *App) setIdle(v bool) {
+	app.stateMu.Lock()
+	app.idle = v
+	app.stateMu.Unlock()
+}
+
+func (app *App) isIdle() bool {
+	app.stateMu.RLock()
+	defer app.stateMu.RUnlock()
+	return app.idle
+}
+
+func (app *App) setBGMActive(v bool) {
+	app.stateMu.Lock()
+	app.bgmActive = v
+	app.stateMu.Unlock()
+}
+
+func (app *App) isBGMActive() bool {
+	app.stateMu.RLock()
+	defer app.stateMu.RUnlock()
+	return app.bgmActive
+}
+
+func (app *App) getBGMSettings() models.BGMSettings {
+	app.stateMu.RLock()
+	defer app.stateMu.RUnlock()
+	return app.bgmSettings
+}
+
+func (app *App) setBGMSettings(s models.BGMSettings) {
+	app.stateMu.Lock()
+	app.bgmSettings = s
+	app.stateMu.Unlock()
 }
 
 // getEnv returns environment variable value or default
@@ -159,68 +208,386 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 	return defaultValue
 }
 
-// saveEnvFile updates specific keys in the .env file while preserving other settings
-func saveEnvFile(updates map[string]string) error {
-	envPath := ".env"
+const configFilePath = "songmartyn.config"
 
-	// Read existing .env file
-	existing := make(map[string]string)
-	var lines []string
+// defaultConfigTemplate is the documented config file generated on first launch.
+// Each setting has a description comment. Values here are the defaults.
+const defaultConfigTemplate = `# ============================================================
+# SongMartyn Configuration
+# ============================================================
+# This file is auto-generated on first launch. Edit values as needed.
+# Settings marked [admin panel] can also be changed from the web UI.
+# Lines starting with # are comments.
 
-	data, err := os.ReadFile(envPath)
-	if err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			lines = append(lines, line)
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			if idx := strings.Index(line, "="); idx > 0 {
-				key := strings.TrimSpace(line[:idx])
-				existing[key] = line[idx+1:]
-			}
+# -----------------------------------------------------------
+# Server
+# -----------------------------------------------------------
+
+# HTTPS port for the web interface [admin panel]
+# Default: 8443
+HTTPS_PORT=8443
+
+# HTTP port (redirects to HTTPS) [admin panel]
+# Default: 8080
+HTTP_PORT=8080
+
+# Admin PIN for remote access [admin panel]
+# If empty, admin panel is only accessible from localhost
+# Default: (empty)
+ADMIN_PIN=
+
+# TLS certificate file path [admin panel]
+# Default: ./certs/cert.pem
+TLS_CERT=./certs/cert.pem
+
+# TLS private key file path [admin panel]
+# Default: ./certs/key.pem
+TLS_KEY=./certs/key.pem
+
+# -----------------------------------------------------------
+# Paths
+# -----------------------------------------------------------
+
+# Directory for SQLite databases and cache files
+# Default: ./data
+DATA_DIR=./data
+
+# Path to mpv video player executable [admin panel]
+# Examples: mpv, /usr/bin/mpv, /opt/homebrew/bin/mpv
+# Default: mpv
+VIDEO_PLAYER=mpv
+
+# -----------------------------------------------------------
+# YouTube
+# -----------------------------------------------------------
+
+# YouTube Data API v3 key for search [admin panel]
+# Get one from https://console.cloud.google.com/
+# If empty, YouTube search is disabled
+# Default: (empty)
+YOUTUBE_API_KEY=
+
+# -----------------------------------------------------------
+# Display
+# -----------------------------------------------------------
+
+# Target display name for the player window [admin panel]
+# Leave empty for auto/primary display
+# Default: (empty)
+TARGET_DISPLAY=
+
+# Automatically fullscreen the player on startup [admin panel]
+# Default: true
+AUTO_FULLSCREEN=true
+
+# Video quality mode: (empty)=off, enhanced, softened [admin panel]
+# Default: (empty)
+VIDEO_QUALITY=
+
+# -----------------------------------------------------------
+# Feature Toggles
+# -----------------------------------------------------------
+
+# Enable pitch control slider for singers [admin panel]
+# Default: true
+PITCH_CONTROL_ENABLED=true
+
+# Enable tempo control slider for singers [admin panel]
+# Default: true
+TEMPO_CONTROL_ENABLED=true
+
+# Fair rotation: spread each singer's songs apart in queue [admin panel]
+# Default: false
+FAIR_ROTATION_ENABLED=false
+
+# Show scrolling ticker overlay during playback [admin panel]
+# Default: true
+SCROLLING_TICKER_ENABLED=true
+
+# Show singer name overlay when song starts [admin panel]
+# Default: true
+SINGER_NAME_OVERLAY=true
+
+# -----------------------------------------------------------
+# Background Music (BGM)
+# -----------------------------------------------------------
+
+# Enable background music on the holding screen [admin panel]
+# Default: false
+BGM_ENABLED=false
+
+# BGM source type: youtube or icecast [admin panel]
+# Default: youtube
+BGM_SOURCE=youtube
+
+# BGM stream/video URL [admin panel]
+# Default: (empty)
+BGM_URL=
+
+# BGM volume (0-100) [admin panel]
+# Default: 50
+BGM_VOLUME=50
+
+# -----------------------------------------------------------
+# Holding Screen
+# -----------------------------------------------------------
+
+# Message displayed on the holding screen [admin panel]
+# Default: (empty)
+HOLDING_MESSAGE=
+
+# -----------------------------------------------------------
+# Network
+# -----------------------------------------------------------
+
+# Hostname advertised via mDNS (e.g. "karaoke" -> karaoke.local)
+# Default: karaoke
+MDNS_HOSTNAME=karaoke
+
+# Auto-launch admin page in browser on startup
+# Default: false
+LAUNCH_BROWSER=false
+`
+
+// loadConfigFile reads a key=value config file and sets environment variables.
+// If the file doesn't exist, it creates one with documented defaults.
+func loadConfigFile(path string) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// Check if legacy .env exists and suggest migration
+		if _, envErr := os.Stat(".env"); envErr == nil {
+			log.Printf("Note: Found .env file but no %s. You can rename .env to %s (same format, comments are preserved).", path, path)
+		}
+		log.Printf("Config file not found, creating default: %s", path)
+		if err := os.WriteFile(path, []byte(defaultConfigTemplate), 0644); err != nil {
+			log.Printf("Warning: Failed to create config file: %v", err)
 		}
 	}
 
-	// Apply updates
-	for key, value := range updates {
-		existing[key] = value
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("Warning: Failed to read config file %s: %v", path, err)
+		return
 	}
 
-	// Rebuild the file, updating existing keys in place
-	updatedKeys := make(map[string]bool)
-	var result []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if idx := strings.Index(line, "="); idx > 0 {
+			key := strings.TrimSpace(line[:idx])
+			value := line[idx+1:]
+			// Only set if not already set (real env vars take precedence)
+			if os.Getenv(key) == "" {
+				os.Setenv(key, value)
+			}
+		}
+	}
+}
 
-	for _, line := range lines {
+// saveConfigValue updates specific keys in the config file while preserving
+// all comments and other settings.
+func saveConfigValue(updates map[string]string) error {
+	data, err := os.ReadFile(configFilePath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	updatedKeys := make(map[string]bool)
+
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			result = append(result, line)
 			continue
 		}
 		if idx := strings.Index(trimmed, "="); idx > 0 {
 			key := strings.TrimSpace(trimmed[:idx])
 			if newVal, ok := updates[key]; ok {
-				result = append(result, fmt.Sprintf("%s=%s", key, newVal))
+				lines[i] = key + "=" + newVal
 				updatedKeys[key] = true
-				continue
 			}
 		}
-		result = append(result, line)
 	}
 
-	// Add any new keys that weren't in the original file
+	// Append any keys that weren't found in the file
 	for key, value := range updates {
 		if !updatedKeys[key] {
-			result = append(result, fmt.Sprintf("%s=%s", key, value))
+			lines = append(lines, key+"="+value)
 		}
 	}
 
-	// Write back to file
-	output := strings.Join(result, "\n")
-	if !strings.HasSuffix(output, "\n") {
-		output += "\n"
+	output := strings.Join(lines, "\n")
+	return os.WriteFile(configFilePath, []byte(output), 0644)
+}
+
+// boolToConfig converts a bool to a config file string value.
+func boolToConfig(b bool) string {
+	if b {
+		return "true"
 	}
-	return os.WriteFile(envPath, []byte(output), 0644)
+	return "false"
+}
+
+// writeConfigFile writes ALL current settings to the config file with full documentation.
+// This ensures no settings are silently lost (unlike the old .env approach).
+func (app *App) writeConfigFile() error {
+	bgm := app.getBGMSettings()
+
+	app.holdingMessageMu.RLock()
+	holdingMsg := app.holdingMessage
+	app.holdingMessageMu.RUnlock()
+
+	content := fmt.Sprintf(`# ============================================================
+# SongMartyn Configuration
+# ============================================================
+# This file is auto-generated on first launch. Edit values as needed.
+# Settings marked [admin panel] can also be changed from the web UI.
+# Lines starting with # are comments.
+
+# -----------------------------------------------------------
+# Server
+# -----------------------------------------------------------
+
+# HTTPS port for the web interface [admin panel]
+# Default: 8443
+HTTPS_PORT=%s
+
+# HTTP port (redirects to HTTPS) [admin panel]
+# Default: 8080
+HTTP_PORT=%s
+
+# Admin PIN for remote access [admin panel]
+# If empty, admin panel is only accessible from localhost
+# Default: (empty)
+ADMIN_PIN=%s
+
+# TLS certificate file path [admin panel]
+# Default: ./certs/cert.pem
+TLS_CERT=%s
+
+# TLS private key file path [admin panel]
+# Default: ./certs/key.pem
+TLS_KEY=%s
+
+# -----------------------------------------------------------
+# Paths
+# -----------------------------------------------------------
+
+# Directory for SQLite databases and cache files
+# Default: ./data
+DATA_DIR=%s
+
+# Path to mpv video player executable [admin panel]
+# Examples: mpv, /usr/bin/mpv, /opt/homebrew/bin/mpv
+# Default: mpv
+VIDEO_PLAYER=%s
+
+# -----------------------------------------------------------
+# YouTube
+# -----------------------------------------------------------
+
+# YouTube Data API v3 key for search [admin panel]
+# Get one from https://console.cloud.google.com/
+# If empty, YouTube search is disabled
+# Default: (empty)
+YOUTUBE_API_KEY=%s
+
+# -----------------------------------------------------------
+# Display
+# -----------------------------------------------------------
+
+# Target display name for the player window [admin panel]
+# Leave empty for auto/primary display
+# Default: (empty)
+TARGET_DISPLAY=%s
+
+# Automatically fullscreen the player on startup [admin panel]
+# Default: true
+AUTO_FULLSCREEN=%s
+
+# Video quality mode: (empty)=off, enhanced, softened [admin panel]
+# Default: (empty)
+VIDEO_QUALITY=%s
+
+# -----------------------------------------------------------
+# Feature Toggles
+# -----------------------------------------------------------
+
+# Enable pitch control slider for singers [admin panel]
+# Default: true
+PITCH_CONTROL_ENABLED=%s
+
+# Enable tempo control slider for singers [admin panel]
+# Default: true
+TEMPO_CONTROL_ENABLED=%s
+
+# Fair rotation: spread each singer's songs apart in queue [admin panel]
+# Default: false
+FAIR_ROTATION_ENABLED=%s
+
+# Show scrolling ticker overlay during playback [admin panel]
+# Default: true
+SCROLLING_TICKER_ENABLED=%s
+
+# Show singer name overlay when song starts [admin panel]
+# Default: true
+SINGER_NAME_OVERLAY=%s
+
+# -----------------------------------------------------------
+# Background Music (BGM)
+# -----------------------------------------------------------
+
+# Enable background music on the holding screen [admin panel]
+# Default: false
+BGM_ENABLED=%s
+
+# BGM source type: youtube or icecast [admin panel]
+# Default: youtube
+BGM_SOURCE=%s
+
+# BGM stream/video URL [admin panel]
+# Default: (empty)
+BGM_URL=%s
+
+# BGM volume (0-100) [admin panel]
+# Default: 50
+BGM_VOLUME=%.0f
+
+# -----------------------------------------------------------
+# Holding Screen
+# -----------------------------------------------------------
+
+# Message displayed on the holding screen [admin panel]
+# Default: (empty)
+HOLDING_MESSAGE=%s
+
+# -----------------------------------------------------------
+# Network
+# -----------------------------------------------------------
+
+# Hostname advertised via mDNS (e.g. "karaoke" -> karaoke.local)
+# Default: karaoke
+MDNS_HOSTNAME=%s
+
+# Auto-launch admin page in browser on startup
+# Default: false
+LAUNCH_BROWSER=%s
+`,
+		app.config.Port, app.config.HTTPPort, app.config.AdminPIN,
+		app.config.CertFile, app.config.KeyFile,
+		app.config.DataDir, app.config.VideoPlayer,
+		app.config.YouTubeAPIKey,
+		app.config.TargetDisplay, boolToConfig(app.config.AutoFullscreen), app.config.VideoQuality,
+		boolToConfig(app.config.PitchControlEnabled), boolToConfig(app.config.TempoControlEnabled),
+		boolToConfig(app.config.FairRotationEnabled), boolToConfig(app.config.ScrollingTickerEnabled),
+		boolToConfig(app.config.SingerNameOverlay),
+		boolToConfig(bgm.Enabled), string(bgm.SourceType), bgm.URL, bgm.Volume,
+		holdingMsg,
+		app.config.MDNSHostname, boolToConfig(app.config.LaunchBrowser),
+	)
+
+	return os.WriteFile(configFilePath, []byte(content), 0644)
 }
 
 // openBrowser opens the default browser to the specified URL
@@ -245,12 +612,10 @@ func main() {
 		runtime.LockOSThread()
 	}
 
-	// Load .env file (optional - won't error if missing)
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using environment variables and defaults")
-	}
+	// Load config file (creates default if missing)
+	loadConfigFile(configFilePath)
 
-	// Parse flags (flags override .env values)
+	// Parse flags (flags override config file values)
 	port := flag.String("port", "", "HTTPS server port (overrides HTTPS_PORT)")
 	httpPort := flag.String("http-port", "", "HTTP port (overrides HTTP_PORT)")
 	dataDir := flag.String("data", "", "Data directory (overrides DATA_DIR)")
@@ -280,6 +645,7 @@ func main() {
 		// Display settings
 		TargetDisplay:  getEnv("TARGET_DISPLAY", ""),
 		AutoFullscreen: getEnvBool("AUTO_FULLSCREEN", true),
+		VideoQuality:   getEnv("VIDEO_QUALITY", ""),
 
 		// Feature toggles (default: all enabled)
 		PitchControlEnabled:    getEnvBool("PITCH_CONTROL_ENABLED", true),
@@ -382,6 +748,7 @@ func NewApp(config Config) (*App, error) {
 		TargetDisplay:  config.TargetDisplay,
 		ScreenIndex:    -1, // Will be resolved from display name
 		AutoFullscreen: config.AutoFullscreen,
+		VideoQuality:   config.VideoQuality,
 	}
 
 	// If a target display is specified, try to find its screen index
@@ -438,6 +805,14 @@ func NewApp(config Config) (*App, error) {
 		// Continue without holding screen - it's not critical
 	}
 
+	// Initialize YouTube downloader (nil if yt-dlp not installed — YouTube queueing gracefully disabled)
+	ytCacheDir := filepath.Join(config.DataDir, "youtube-cache")
+	ytDownloader, err := ytdl.NewDownloader(ytCacheDir)
+	if err != nil {
+		log.Printf("YouTube downloads disabled: %v", err)
+		// Continue without downloader — search still works, queueing will return an error
+	}
+
 	app := &App{
 		config:         config,
 		mpv:            mpvCtrl,
@@ -448,6 +823,7 @@ func NewApp(config Config) (*App, error) {
 		library:        libraryMgr,
 		holdingScreen:  holdingScreenGen,
 		holdingMessage: getEnv("HOLDING_MESSAGE", ""),
+		ytDownloader:   ytDownloader, // nil if yt-dlp not available
 	}
 
 	// Start mDNS server if hostname is configured
@@ -469,7 +845,7 @@ func NewApp(config Config) (*App, error) {
 		}
 	}
 
-	// Load BGM settings from .env
+	// Load BGM settings from config
 	app.bgmSettings = models.BGMSettings{
 		Enabled:    getEnvBool("BGM_ENABLED", false),
 		SourceType: models.BGMSourceType(getEnv("BGM_SOURCE", "youtube")),
@@ -479,6 +855,33 @@ func NewApp(config Config) (*App, error) {
 
 	// Apply feature settings
 	queueMgr.SetFairRotation(config.FairRotationEnabled)
+
+	// Wire YouTube download progress callback (throttled broadcasts)
+	if app.ytDownloader != nil {
+		var lastBroadcast time.Time
+		var broadcastMu sync.Mutex
+		app.ytDownloader.OnProgress(func(videoID string, state *ytdl.DownloadState) {
+			// Always broadcast immediately for terminal states
+			if state.Status == ytdl.StatusReady || state.Status == ytdl.StatusFailed {
+				// If download completed, update the queue entry's VideoURL
+				if state.Status == ytdl.StatusReady && state.FilePath != "" {
+					songID := "youtube:" + videoID
+					app.queue.UpdateVideoURL(songID, state.FilePath)
+				}
+				app.broadcastState()
+				return
+			}
+			// Throttle progress broadcasts to max 1/second
+			broadcastMu.Lock()
+			if time.Since(lastBroadcast) >= time.Second {
+				lastBroadcast = time.Now()
+				broadcastMu.Unlock()
+				app.broadcastState()
+			} else {
+				broadcastMu.Unlock()
+			}
+		})
+	}
 
 	// Wire up handlers
 	app.setupHandlers()
@@ -534,37 +937,74 @@ func (app *App) setupHandlers() {
 			}
 		},
 
-		OnQueueAdd: func(client *websocket.Client, songID string, vocalAssist models.VocalAssistLevel) {
+		OnQueueAdd: func(client *websocket.Client, payload websocket.QueueAddPayload) {
+			songID := payload.SongID
+			vocalAssist := payload.VocalAssist
+
 			// Check if this is the first song (queue is empty before adding)
 			wasEmpty := app.queue.IsEmpty()
-
-			// Fetch song from library
-			libSong, err := app.library.GetSong(songID)
-			if err != nil {
-				log.Printf("Failed to get song %s: %v", songID, err)
-				app.hub.SendTo(client, websocket.MsgError, map[string]string{"error": "Song not found"})
-				return
-			}
 
 			// Use vocal assist from request, or default to OFF
 			if vocalAssist == "" {
 				vocalAssist = models.VocalOff
 			}
 
-			// Convert LibrarySong to queue Song
-			song := models.Song{
-				ID:           libSong.ID,
-				Title:        libSong.Title,
-				Artist:       libSong.Artist,
-				Duration:     libSong.Duration,
-				ThumbnailURL: libSong.ThumbnailURL,
-				VideoURL:     libSong.FilePath, // Use file path as video URL
-				VocalPath:    libSong.VocalPath,
-				InstrPath:    libSong.InstrPath,
-				CDGPath:      libSong.CDGPath,   // CDG graphics file
-				AudioPath:    libSong.AudioPath, // Audio for CDG
-				VocalAssist:  vocalAssist,
-				AddedBy:      client.GetSession().MartynKey,
+			var song models.Song
+
+			if strings.HasPrefix(songID, "youtube:") {
+				// YouTube song — construct from payload metadata
+				videoID := strings.TrimPrefix(songID, "youtube:")
+
+				if app.ytDownloader == nil {
+					app.hub.SendTo(client, websocket.MsgError, map[string]string{
+						"error": "YouTube downloads not available (yt-dlp not installed)",
+					})
+					return
+				}
+
+				song = models.Song{
+					ID:           songID,
+					Title:        payload.Title,
+					Artist:       payload.Artist,
+					Duration:     payload.Duration,
+					ThumbnailURL: payload.ThumbnailURL,
+					VocalAssist:  vocalAssist,
+					AddedBy:      client.GetSession().MartynKey,
+				}
+
+				// Check if already cached
+				if fp := app.ytDownloader.GetFilePath(videoID); fp != "" {
+					song.VideoURL = fp
+					song.DownloadStatus = "ready"
+					song.DownloadProgress = 100
+				} else {
+					// Start async download
+					song.DownloadStatus = "pending"
+					app.ytDownloader.StartDownload(videoID)
+				}
+			} else {
+				// Library song — existing flow
+				libSong, err := app.library.GetSong(songID)
+				if err != nil {
+					log.Printf("Failed to get song %s: %v", songID, err)
+					app.hub.SendTo(client, websocket.MsgError, map[string]string{"error": "Song not found"})
+					return
+				}
+
+				song = models.Song{
+					ID:           libSong.ID,
+					Title:        libSong.Title,
+					Artist:       libSong.Artist,
+					Duration:     libSong.Duration,
+					ThumbnailURL: libSong.ThumbnailURL,
+					VideoURL:     libSong.FilePath,
+					VocalPath:    libSong.VocalPath,
+					InstrPath:    libSong.InstrPath,
+					CDGPath:      libSong.CDGPath,
+					AudioPath:    libSong.AudioPath,
+					VocalAssist:  vocalAssist,
+					AddedBy:      client.GetSession().MartynKey,
+				}
 			}
 
 			// Add to queue
@@ -576,8 +1016,8 @@ func (app *App) setupHandlers() {
 
 			log.Printf("Song '%s' added to queue by %s", song.Title, client.GetSession().DisplayName)
 
-			// Always update holding screen to show "Next Up" info
-			app.showHoldingScreen()
+			// Update holding screen if idle (don't interrupt active playback)
+			app.updateHoldingScreenIfIdle()
 
 			// Auto-start playback if this is the first song and autoplay is enabled
 			if wasEmpty && app.queue.GetAutoplay() {
@@ -614,7 +1054,8 @@ func (app *App) setupHandlers() {
 				} else {
 					log.Println("Current song removed - queue empty")
 					// Start BGM if enabled, otherwise show holding screen
-					if app.bgmSettings.Enabled && app.bgmSettings.URL != "" {
+					bgm := app.getBGMSettings()
+					if bgm.Enabled && bgm.URL != "" {
 						app.startBGM()
 					} else {
 						app.showHoldingScreen()
@@ -667,7 +1108,7 @@ func (app *App) setupHandlers() {
 			if current := app.queue.Current(); current != nil {
 				currentSingerKey = current.AddedBy
 			}
-			app.mpv.Stop()
+			app.mpv.StopPlayback()
 			if next := app.queue.Next(); next != nil {
 				// Use countdown system for consistent transitions
 				app.startCountdown(currentSingerKey)
@@ -715,6 +1156,8 @@ func (app *App) setupHandlers() {
 				log.Printf("Failed to set key change to %d: %v", semitones, err)
 			} else {
 				log.Printf("Key changed to %+d semitones by %s", semitones, client.GetSession().DisplayName)
+				app.queue.UpdateCurrentKeyChange(semitones)
+				app.broadcastState()
 			}
 		},
 
@@ -735,6 +1178,8 @@ func (app *App) setupHandlers() {
 				log.Printf("Failed to set tempo to %.2f: %v", speed, err)
 			} else {
 				log.Printf("Tempo changed to %.2fx by %s", speed, client.GetSession().DisplayName)
+				app.queue.UpdateCurrentTempoChange(speed)
+				app.broadcastState()
 			}
 		},
 
@@ -975,7 +1420,8 @@ func (app *App) setupHandlers() {
 			// Brief delay to ensure MPV is ready for new content
 			time.Sleep(100 * time.Millisecond)
 			// Start BGM if enabled, otherwise show holding screen
-			if app.bgmSettings.Enabled && app.bgmSettings.URL != "" {
+			bgmS := app.getBGMSettings()
+			if bgmS.Enabled && bgmS.URL != "" {
 				app.startBGM()
 			} else {
 				app.showHoldingScreen()
@@ -1020,18 +1466,19 @@ func (app *App) setupHandlers() {
 
 		OnAdminToggleBGM: func(client *websocket.Client) error {
 			// Can only toggle BGM when idle (no song playing) and no countdown
-			if !app.idle {
+			if !app.isIdle() {
 				return fmt.Errorf("cannot toggle BGM while a song is playing")
 			}
 			if app.countdown.Active {
 				return fmt.Errorf("cannot toggle BGM during countdown")
 			}
 
-			if app.bgmActive {
+			if app.isBGMActive() {
 				log.Printf("Admin %s stopping BGM", client.GetSession().MartynKey[:8])
 				app.stopBGM()
 			} else {
-				if !app.bgmSettings.Enabled || app.bgmSettings.URL == "" {
+				bgm := app.getBGMSettings()
+				if !bgm.Enabled || bgm.URL == "" {
 					return fmt.Errorf("BGM is not configured - set up in Settings")
 				}
 				log.Printf("Admin %s starting BGM", client.GetSession().MartynKey[:8])
@@ -1047,9 +1494,9 @@ func (app *App) setupHandlers() {
 			app.holdingMessageMu.Unlock()
 			log.Printf("Admin %s set holding screen message: %q", client.GetSession().DisplayName, message)
 
-			// Persist to .env file
-			if err := saveEnvFile(map[string]string{"HOLDING_MESSAGE": message}); err != nil {
-				log.Printf("Warning: Failed to save holding message to .env: %v", err)
+			// Persist to config file
+			if err := saveConfigValue(map[string]string{"HOLDING_MESSAGE": message}); err != nil {
+				log.Printf("Warning: Failed to save holding message to config: %v", err)
 			}
 
 			// Refresh the holding screen to show the new message
@@ -1091,7 +1538,8 @@ func (app *App) setupHandlers() {
 		if !app.queue.GetAutoplay() {
 			log.Println("Autoplay disabled - showing holding screen, waiting for Play button")
 			// Start BGM if enabled while waiting
-			if app.bgmSettings.Enabled && app.bgmSettings.URL != "" {
+			bgmC := app.getBGMSettings()
+			if bgmC.Enabled && bgmC.URL != "" {
 				app.startBGM()
 			} else {
 				app.showHoldingScreen()
@@ -1106,7 +1554,8 @@ func (app *App) setupHandlers() {
 			app.startCountdown(currentSingerKey)
 		} else {
 			// Start BGM if enabled
-			if app.bgmSettings.Enabled && app.bgmSettings.URL != "" {
+			bgmC := app.getBGMSettings()
+			if bgmC.Enabled && bgmC.URL != "" {
 				app.startBGM()
 			} else {
 				log.Println("Queue empty - showing holding screen")
@@ -1126,18 +1575,34 @@ func (app *App) setupHandlers() {
 func (app *App) getRoomState() models.RoomState {
 	playerState, _ := app.mpv.GetState()
 	playerState.CurrentSong = app.queue.Current()
-	playerState.BGMActive = app.bgmActive
-	playerState.BGMEnabled = app.bgmSettings.Enabled
-	playerState.Idle = app.idle
+	playerState.BGMActive = app.isBGMActive()
+	bgm := app.getBGMSettings()
+	playerState.BGMEnabled = bgm.Enabled
+	playerState.Idle = app.isIdle()
 
 	// Get countdown state safely
 	app.countdownMu.Lock()
 	countdownState := app.countdown
 	app.countdownMu.Unlock()
 
+	queueState := app.queue.GetState()
+
+	// Enrich YouTube songs with live download status
+	if app.ytDownloader != nil {
+		for i := range queueState.Songs {
+			if strings.HasPrefix(queueState.Songs[i].ID, "youtube:") {
+				videoID := strings.TrimPrefix(queueState.Songs[i].ID, "youtube:")
+				if state := app.ytDownloader.GetState(videoID); state != nil {
+					queueState.Songs[i].DownloadStatus = string(state.Status)
+					queueState.Songs[i].DownloadProgress = state.Progress
+				}
+			}
+		}
+	}
+
 	return models.RoomState{
 		Player:    playerState,
-		Queue:     app.queue.GetState(),
+		Queue:     queueState,
 		Sessions:  app.sessions.GetActiveSessions(),
 		Countdown: countdownState,
 	}
@@ -1247,15 +1712,16 @@ func (app *App) broadcastClientList() {
 // playCurrentSong starts playing the current song in the queue
 // startBGM starts background music playback with holding screen visible
 func (app *App) startBGM() {
-	if !app.bgmSettings.Enabled || app.bgmSettings.URL == "" {
+	bgm := app.getBGMSettings()
+	if !bgm.Enabled || bgm.URL == "" {
 		log.Println("[BGM] Cannot start - not enabled or no URL configured")
 		return
 	}
 
-	log.Printf("Starting BGM: %s (volume: %.0f)", app.bgmSettings.URL, app.bgmSettings.Volume)
+	log.Printf("Starting BGM: %s (volume: %.0f)", bgm.URL, bgm.Volume)
 
 	// Mark as idle (no song playing)
-	app.idle = true
+	app.setIdle(true)
 
 	// Generate the holding screen image
 	imagePath := app.generateHoldingScreenImage()
@@ -1265,22 +1731,22 @@ func (app *App) startBGM() {
 	}
 
 	// Load BGM with holding screen image (includes fade-in)
-	if err := app.mpv.LoadBGMWithImage(imagePath, app.bgmSettings.URL, app.bgmSettings.Volume); err != nil {
+	if err := app.mpv.LoadBGMWithImage(imagePath, bgm.URL, bgm.Volume); err != nil {
 		log.Printf("Failed to load BGM with image: %v", err)
-		app.bgmActive = false
+		app.setBGMActive(false)
 		// Show holding screen on failure
 		app.showHoldingScreen()
 		return
 	}
 
-	app.bgmActive = true
+	app.setBGMActive(true)
 	app.broadcastState()
 }
 
 // stopBGM stops background music playback with fade-out
 // It broadcasts state to notify all clients (including admin UI) that BGM stopped
 func (app *App) stopBGM() {
-	if !app.bgmActive {
+	if !app.isBGMActive() {
 		return
 	}
 
@@ -1291,13 +1757,13 @@ func (app *App) stopBGM() {
 		log.Printf("Failed to stop BGM audio: %v", err)
 	}
 
-	app.bgmActive = false
+	app.setBGMActive(false)
 
 	// Broadcast state to notify clients that BGM stopped
 	app.broadcastState()
 
 	// Show holding screen after stopping BGM (if we're still idle)
-	if app.idle {
+	if app.isIdle() {
 		app.showHoldingScreen()
 	}
 }
@@ -1321,9 +1787,10 @@ func (app *App) generateHoldingScreenImage() string {
 		singer := app.sessions.Get(nextSong.AddedBy)
 
 		nextUp = &holdingscreen.NextUpInfo{
-			SongTitle:  nextSong.Title,
-			SongArtist: nextSong.Artist,
-			SingerName: "Unknown",
+			SongTitle:      nextSong.Title,
+			SongArtist:     nextSong.Artist,
+			SingerName:     "Unknown",
+			WaitingForHost: !app.queue.GetAutoplay(),
 		}
 		if singer != nil {
 			nextUp.SingerName = singer.DisplayName
@@ -1354,7 +1821,7 @@ func (app *App) showHoldingScreen() {
 	}
 
 	// Mark as idle (not playing a song)
-	app.idle = true
+	app.setIdle(true)
 
 	// Get connection URL
 	connectURL := app.autoDetectConnectURL()
@@ -1370,9 +1837,10 @@ func (app *App) showHoldingScreen() {
 		singer := app.sessions.Get(nextSong.AddedBy)
 
 		nextUp = &holdingscreen.NextUpInfo{
-			SongTitle:  nextSong.Title,
-			SongArtist: nextSong.Artist,
-			SingerName: "Unknown",
+			SongTitle:      nextSong.Title,
+			SongArtist:     nextSong.Artist,
+			SingerName:     "Unknown",
+			WaitingForHost: !app.queue.GetAutoplay(),
 		}
 		if singer != nil {
 			nextUp.SingerName = singer.DisplayName
@@ -1393,7 +1861,7 @@ func (app *App) showHoldingScreen() {
 	}
 
 	// If BGM is active, update just the image while keeping audio playing
-	if app.bgmActive {
+	if app.isBGMActive() {
 		if err := app.mpv.UpdateBGMImage(imagePath); err != nil {
 			log.Printf("Failed to update BGM image: %v", err)
 		} else {
@@ -1412,9 +1880,20 @@ func (app *App) showHoldingScreen() {
 
 // updateHoldingScreenIfIdle refreshes the holding screen if no song is currently playing
 func (app *App) updateHoldingScreenIfIdle() {
-	// Only update if we're not currently playing a song
-	if app.queue.Current() == nil || !app.queue.GetAutoplay() {
+	if app.isIdle() {
 		app.showHoldingScreen()
+	}
+}
+
+// cancelCountdownLocked cancels any running countdown goroutine. Must be called with countdownMu held.
+func (app *App) cancelCountdownLocked() {
+	if app.countdownTicker != nil {
+		app.countdownTicker.Stop()
+		app.countdownTicker = nil
+	}
+	if app.countdownCancel != nil {
+		app.countdownCancel() // idempotent — safe to call multiple times
+		app.countdownCancel = nil
 	}
 }
 
@@ -1424,10 +1903,7 @@ func (app *App) startCountdown(currentSingerKey string) {
 	app.countdownMu.Lock()
 
 	// Stop any existing countdown
-	if app.countdownTicker != nil {
-		app.countdownTicker.Stop()
-		close(app.countdownStop)
-	}
+	app.cancelCountdownLocked()
 
 	// Get the next song
 	nextSong := app.queue.Current()
@@ -1449,11 +1925,15 @@ func (app *App) startCountdown(currentSingerKey string) {
 		RequiresApproval: requiresApproval,
 	}
 
-	// Create ticker and stop channel
+	// Create ticker and cancellable context
 	app.countdownTicker = time.NewTicker(1 * time.Second)
-	app.countdownStop = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	app.countdownCancel = cancel
 
 	log.Printf("Starting 15-second countdown for next song (requires approval: %v)", requiresApproval)
+
+	// Capture ticker locally before releasing mutex — stopCountdown() can nil the field
+	ticker := app.countdownTicker
 
 	// Unlock BEFORE calling broadcastState to avoid deadlock
 	// (broadcastState -> getRoomState -> countdownMu.Lock would deadlock)
@@ -1466,9 +1946,9 @@ func (app *App) startCountdown(currentSingerKey string) {
 	go func() {
 		for {
 			select {
-			case <-app.countdownStop:
+			case <-ctx.Done():
 				return
-			case <-app.countdownTicker.C:
+			case <-ticker.C:
 				app.countdownMu.Lock()
 				if !app.countdown.Active {
 					app.countdownMu.Unlock()
@@ -1523,7 +2003,7 @@ func (app *App) startPlayCountdown(seconds int) {
 	}
 
 	// Stop BGM immediately when countdown starts
-	if app.bgmActive {
+	if app.isBGMActive() {
 		log.Println("[DEBUG] Stopping BGM for countdown")
 		app.stopBGM()
 	}
@@ -1532,15 +2012,7 @@ func (app *App) startPlayCountdown(seconds int) {
 	log.Println("[DEBUG] Acquired countdown mutex")
 
 	// Stop any existing countdown
-	if app.countdownTicker != nil {
-		log.Println("[DEBUG] Stopping existing countdown ticker")
-		app.countdownTicker.Stop()
-		app.countdownTicker = nil
-		if app.countdownStop != nil {
-			close(app.countdownStop)
-			app.countdownStop = nil
-		}
-	}
+	app.cancelCountdownLocked()
 
 	// Get the next song
 	nextSong := app.queue.Current()
@@ -1569,11 +2041,15 @@ func (app *App) startPlayCountdown(seconds int) {
 	}
 	log.Printf("[DEBUG] Countdown state set: Active=%v, Seconds=%d", app.countdown.Active, app.countdown.SecondsRemaining)
 
-	// Create ticker and stop channel
+	// Create ticker and cancellable context
 	app.countdownTicker = time.NewTicker(1 * time.Second)
-	app.countdownStop = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	app.countdownCancel = cancel
 
 	log.Printf("[DEBUG] Starting %d-second play countdown - ticker created", seconds)
+
+	// Capture ticker locally before releasing mutex — stopCountdown() can nil the field
+	ticker := app.countdownTicker
 
 	// Unlock BEFORE calling broadcastState to avoid deadlock
 	app.countdownMu.Unlock()
@@ -1589,9 +2065,9 @@ func (app *App) startPlayCountdown(seconds int) {
 	go func() {
 		for {
 			select {
-			case <-app.countdownStop:
+			case <-ctx.Done():
 				return
-			case <-app.countdownTicker.C:
+			case <-ticker.C:
 				app.countdownMu.Lock()
 				if !app.countdown.Active {
 					app.countdownMu.Unlock()
@@ -1621,26 +2097,14 @@ func (app *App) stopCountdown() {
 	app.countdownMu.Lock()
 	defer app.countdownMu.Unlock()
 
-	if app.countdownTicker != nil {
-		app.countdownTicker.Stop()
-		close(app.countdownStop)
-		app.countdownTicker = nil
-	}
-
+	app.cancelCountdownLocked()
 	app.countdown = models.CountdownState{}
 }
 
 // playNextSongNow plays the next song immediately (admin action or auto-play)
 func (app *App) playNextSongNow() {
 	app.countdownMu.Lock()
-	if app.countdownTicker != nil {
-		app.countdownTicker.Stop()
-		app.countdownTicker = nil
-	}
-	if app.countdownStop != nil {
-		close(app.countdownStop)
-		app.countdownStop = nil
-	}
+	app.cancelCountdownLocked()
 	app.countdown = models.CountdownState{}
 	app.countdownMu.Unlock()
 
@@ -1650,16 +2114,103 @@ func (app *App) playNextSongNow() {
 }
 
 func (app *App) playCurrentSong() {
+	// Cancel any outstanding YouTube download-wait goroutine
+	if app.ytDownloadCancel != nil {
+		app.ytDownloadCancel()
+		app.ytDownloadCancel = nil
+	}
+
 	// Stop BGM if active
 	app.stopBGM()
 
+	// Ensure mpv is running — restart if it crashed or was killed
+	if !app.mpv.IsRunning() {
+		log.Println("playCurrentSong: mpv not running, restarting...")
+		if err := app.mpv.Start(); err != nil {
+			log.Printf("playCurrentSong: failed to restart mpv: %v", err)
+			return
+		}
+		log.Println("playCurrentSong: mpv restarted successfully")
+	}
+
 	// Mark as not idle (playing a song)
-	app.idle = false
+	app.setIdle(false)
 
 	song := app.queue.Current()
 	if song == nil {
 		log.Println("playCurrentSong: no current song in queue")
 		return
+	}
+
+	// Handle YouTube songs: wait for download if not ready
+	if strings.HasPrefix(song.ID, "youtube:") && app.ytDownloader != nil {
+		videoID := strings.TrimPrefix(song.ID, "youtube:")
+
+		if fp := app.ytDownloader.GetFilePath(videoID); fp != "" {
+			// Already downloaded — update the song's VideoURL
+			song.VideoURL = fp
+			app.queue.UpdateVideoURL(song.ID, fp)
+		} else {
+			// Check download state
+			state := app.ytDownloader.GetState(videoID)
+			if state != nil && state.Status == ytdl.StatusFailed {
+				log.Printf("YouTube download failed for %s: %s", videoID, state.Error)
+				app.handleSongLoadError(song)
+				return
+			}
+
+			// Still downloading (or pending) — show holding screen and poll
+			log.Printf("Waiting for YouTube download: %s", videoID)
+			app.setIdle(true)
+			app.showHoldingScreen()
+			app.broadcastState()
+
+			// Ensure download is started
+			app.ytDownloader.StartDownload(videoID)
+
+			// Cancel any previous download-wait goroutine
+			if app.ytDownloadCancel != nil {
+				app.ytDownloadCancel()
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			app.ytDownloadCancel = cancel
+
+			go func() {
+				defer cancel()
+				ticker := time.NewTicker(500 * time.Millisecond)
+				defer ticker.Stop()
+
+				for {
+					select {
+					case <-ctx.Done():
+						if ctx.Err() == context.DeadlineExceeded {
+							log.Printf("YouTube download timed out for %s", videoID)
+							app.handleSongLoadError(song)
+							app.broadcastState()
+						}
+						// If cancelled (not timed out), another action took over — just exit silently
+						return
+					case <-ticker.C:
+						if fp := app.ytDownloader.GetFilePath(videoID); fp != "" {
+							song.VideoURL = fp
+							app.queue.UpdateVideoURL(song.ID, fp)
+							app.setIdle(false)
+							app.playCurrentSong()
+							app.broadcastState()
+							return
+						}
+						st := app.ytDownloader.GetState(videoID)
+						if st != nil && st.Status == ytdl.StatusFailed {
+							log.Printf("YouTube download failed for %s: %s", videoID, st.Error)
+							app.handleSongLoadError(song)
+							app.broadcastState()
+							return
+						}
+					}
+				}
+			}()
+			return
+		}
 	}
 
 	log.Printf("Playing: '%s' by '%s' (file: %s)", song.Title, song.Artist, song.VideoURL)
@@ -1675,6 +2226,16 @@ func (app *App) playCurrentSong() {
 			} else if avatarPath != "" {
 				log.Printf("Saved current singer avatar to: %s", avatarPath)
 			}
+		}
+	}
+
+	// Fallback: if VideoURL is a .cdg file but CDGPath/AudioPath are empty
+	// (e.g. loaded from old queue DB without these columns), look up the library
+	if song.CDGPath == "" && strings.HasSuffix(strings.ToLower(song.VideoURL), ".cdg") {
+		if libSong, err := app.library.GetSong(song.ID); err == nil {
+			song.CDGPath = libSong.CDGPath
+			song.AudioPath = libSong.AudioPath
+			log.Printf("CDG fallback: resolved cdg=%s, audio=%s from library", song.CDGPath, song.AudioPath)
 		}
 	}
 
@@ -1733,7 +2294,7 @@ func (app *App) handleSongLoadError(failedSong *models.Song) {
 		})
 	} else {
 		log.Printf("No more songs in queue, showing holding screen")
-		app.idle = true
+		app.setIdle(true)
 		app.showHoldingScreen()
 	}
 }
@@ -1866,6 +2427,7 @@ func (app *App) Run() {
 	mux.HandleFunc("/api/admin/diagnostics", app.admin.Middleware(app.handleDiagnostics))
 	mux.HandleFunc("/api/admin/mdns", app.admin.Middleware(app.handleMDNS))
 	mux.HandleFunc("/api/admin/mpv-check", app.admin.Middleware(app.handleMPVCheck))
+	mux.HandleFunc("/api/admin/ytdlp-check", app.admin.Middleware(app.handleYtDlpCheck))
 	mux.HandleFunc("/api/connect-url", app.handleConnectURL) // Public - returns selected connection URL
 
 	// Avatar API endpoints
@@ -2799,6 +3361,7 @@ type SettingsPayload struct {
 	// Display settings
 	TargetDisplay  string `json:"target_display"`
 	AutoFullscreen bool   `json:"auto_fullscreen"`
+	VideoQuality   string `json:"video_quality"`
 
 	// Feature toggles
 	PitchControlEnabled    bool `json:"pitch_control_enabled"`
@@ -2811,8 +3374,6 @@ type SettingsPayload struct {
 // handleSettings handles GET/POST /api/admin/settings
 func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	envPath := ".env"
 
 	switch r.Method {
 	case http.MethodGet:
@@ -2828,6 +3389,7 @@ func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			// Display settings
 			TargetDisplay:  app.config.TargetDisplay,
 			AutoFullscreen: app.config.AutoFullscreen,
+			VideoQuality:   app.config.VideoQuality,
 
 			// Feature toggles
 			PitchControlEnabled:    app.config.PitchControlEnabled,
@@ -2857,12 +3419,19 @@ func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		// Update display settings immediately (no restart required)
 		app.config.TargetDisplay = settings.TargetDisplay
 		app.config.AutoFullscreen = settings.AutoFullscreen
+		app.config.VideoQuality = settings.VideoQuality
+
+		// Apply video quality change to running mpv instance immediately
+		if err := app.mpv.ApplyVideoQuality(settings.VideoQuality); err != nil {
+			log.Printf("Failed to apply video quality setting: %v", err)
+		}
 
 		// Update mpv controller's display settings so Restart Player uses them
 		newDisplaySettings := mpv.DisplaySettings{
 			TargetDisplay:  settings.TargetDisplay,
 			ScreenIndex:    -1, // Default to auto
 			AutoFullscreen: settings.AutoFullscreen,
+			VideoQuality:   settings.VideoQuality,
 		}
 		// Resolve display name to screen index
 		if settings.TargetDisplay != "" {
@@ -2890,46 +3459,15 @@ func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		// Update the scrolling ticker based on new setting
 		app.updateTicker()
 
-		// Helper to convert bool to env string
-		boolToEnv := func(b bool) string {
-			if b {
-				return "true"
-			}
-			return "false"
-		}
+		// Update remaining config values in memory (take effect on restart)
+		app.config.Port = settings.HTTPSPort
+		app.config.HTTPPort = settings.HTTPPort
+		app.config.YouTubeAPIKey = settings.YouTubeAPIKey
+		app.config.VideoPlayer = settings.VideoPlayer
+		app.config.DataDir = settings.DataDir
 
-		// Build .env content
-		envContent := fmt.Sprintf(`# SongMartyn Configuration
-# Updated via admin panel
-
-HTTPS_PORT=%s
-HTTP_PORT=%s
-ADMIN_PIN=%s
-YOUTUBE_API_KEY=%s
-VIDEO_PLAYER=%s
-DATA_DIR=%s
-TLS_CERT=%s
-TLS_KEY=%s
-
-# Display Settings
-TARGET_DISPLAY=%s
-AUTO_FULLSCREEN=%s
-
-# Feature Toggles
-PITCH_CONTROL_ENABLED=%s
-TEMPO_CONTROL_ENABLED=%s
-FAIR_ROTATION_ENABLED=%s
-SCROLLING_TICKER_ENABLED=%s
-SINGER_NAME_OVERLAY=%s
-`, settings.HTTPSPort, settings.HTTPPort, settings.AdminPIN, settings.YouTubeAPIKey,
-			settings.VideoPlayer, settings.DataDir, app.config.CertFile, app.config.KeyFile,
-			settings.TargetDisplay, boolToEnv(settings.AutoFullscreen),
-			boolToEnv(settings.PitchControlEnabled), boolToEnv(settings.TempoControlEnabled),
-			boolToEnv(settings.FairRotationEnabled), boolToEnv(settings.ScrollingTickerEnabled),
-			boolToEnv(settings.SingerNameOverlay))
-
-		// Write .env file
-		if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
+		// Write all settings to config file (includes BGM, holding message, etc.)
+		if err := app.writeConfigFile(); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save settings: " + err.Error()})
 			return
@@ -3565,7 +4103,7 @@ func (app *App) handleBGM(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		// Return current BGM settings
-		json.NewEncoder(w).Encode(app.bgmSettings)
+		json.NewEncoder(w).Encode(app.getBGMSettings())
 
 	case http.MethodPost:
 		// Update BGM settings
@@ -3582,26 +4120,22 @@ func (app *App) handleBGM(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Update settings
-		app.bgmSettings = settings
+		app.setBGMSettings(settings)
 		log.Printf("BGM settings updated: enabled=%v, source=%s, url=%s, volume=%.0f",
 			settings.Enabled, settings.SourceType, settings.URL, settings.Volume)
 
-		// Save to .env file
-		enabledStr := "false"
-		if settings.Enabled {
-			enabledStr = "true"
-		}
-		if err := saveEnvFile(map[string]string{
-			"BGM_ENABLED": enabledStr,
+		// Save to config file
+		if err := saveConfigValue(map[string]string{
+			"BGM_ENABLED": boolToConfig(settings.Enabled),
 			"BGM_SOURCE":  string(settings.SourceType),
 			"BGM_URL":     settings.URL,
 			"BGM_VOLUME":  fmt.Sprintf("%.0f", settings.Volume),
 		}); err != nil {
-			log.Printf("Warning: Failed to save BGM settings to .env: %v", err)
+			log.Printf("Warning: Failed to save BGM settings to config: %v", err)
 		}
 
 		// If BGM was disabled, stop any active BGM
-		if !settings.Enabled && app.bgmActive {
+		if !settings.Enabled && app.isBGMActive() {
 			app.stopBGM()
 		}
 
@@ -3610,7 +4144,7 @@ func (app *App) handleBGM(w http.ResponseWriter, r *http.Request) {
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":   "ok",
-			"settings": app.bgmSettings,
+			"settings": app.getBGMSettings(),
 		})
 
 	default:
@@ -3831,7 +4365,7 @@ func (app *App) handleBrowseDirs(w http.ResponseWriter, r *http.Request) {
 		IsDir bool   `json:"is_dir"`
 	}
 
-	var dirs []DirEntry
+	dirs := make([]DirEntry, 0)
 	for _, entry := range entries {
 		// Only include directories, skip hidden files (starting with .)
 		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
@@ -3870,8 +4404,17 @@ func (app *App) refreshDiagnostics() {
 	app.diagnostics.Displays = getConnectedDisplays()
 	app.diagnostics.FirewallEnabled, app.diagnostics.FirewallStatus = checkFirewallStatus()
 
-	log.Printf("Diagnostics refreshed: %d ports checked, %d displays found",
-		len(app.diagnostics.PortChecks), len(app.diagnostics.Displays))
+	// Check yt-dlp
+	if version, err := ytdl.CheckInstalled(); err == nil {
+		app.diagnostics.YtDlpInstalled = true
+		app.diagnostics.YtDlpVersion = version
+	} else {
+		app.diagnostics.YtDlpInstalled = false
+		app.diagnostics.YtDlpVersion = ""
+	}
+
+	log.Printf("Diagnostics refreshed: %d ports checked, %d displays found, yt-dlp=%v",
+		len(app.diagnostics.PortChecks), len(app.diagnostics.Displays), app.diagnostics.YtDlpInstalled)
 }
 
 // getDiagnostics returns the cached diagnostics info
@@ -4392,6 +4935,90 @@ func (app *App) handleMPVCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	status.Installed = true
+	json.NewEncoder(w).Encode(status)
+}
+
+// YtDlpStatus represents the yt-dlp installation status and install instructions
+type YtDlpStatus struct {
+	Installed       bool   `json:"installed"`
+	Version         string `json:"version,omitempty"`
+	Path            string `json:"path,omitempty"`
+	Error           string `json:"error,omitempty"`
+	Platform        string `json:"platform"`
+	InstallCommand  string `json:"install_command"`
+	InstallMethod   string `json:"install_method"`
+	DownloadURL     string `json:"download_url"`
+	AlternativeNote string `json:"alternative_note,omitempty"`
+}
+
+// handleYtDlpCheck handles GET /api/admin/ytdlp-check
+func (app *App) handleYtDlpCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	status := YtDlpStatus{
+		Platform:    runtime.GOOS,
+		DownloadURL: "https://github.com/yt-dlp/yt-dlp#installation",
+	}
+
+	switch runtime.GOOS {
+	case "darwin":
+		status.InstallCommand = "brew install yt-dlp"
+		status.InstallMethod = "Homebrew"
+		status.AlternativeNote = "You can also install via pip: pip install yt-dlp"
+	case "linux":
+		distro := detectLinuxDistro()
+		switch distro {
+		case "debian", "ubuntu":
+			status.InstallCommand = "sudo apt install yt-dlp"
+			status.InstallMethod = "APT"
+		case "fedora":
+			status.InstallCommand = "sudo dnf install yt-dlp"
+			status.InstallMethod = "DNF"
+		case "arch":
+			status.InstallCommand = "sudo pacman -S yt-dlp"
+			status.InstallMethod = "Pacman"
+		default:
+			status.InstallCommand = "pip install yt-dlp"
+			status.InstallMethod = "pip"
+			status.AlternativeNote = "Or use your distro's package manager if available."
+		}
+	case "windows":
+		status.InstallCommand = "winget install yt-dlp"
+		status.InstallMethod = "winget"
+		status.AlternativeNote = "You can also use: choco install yt-dlp"
+	default:
+		status.InstallCommand = "pip install yt-dlp"
+		status.InstallMethod = "pip"
+	}
+
+	// Check if yt-dlp is installed
+	ytdlpPath, err := exec.LookPath("yt-dlp")
+	if err != nil {
+		status.Installed = false
+		status.Error = "yt-dlp not found in PATH"
+		json.NewEncoder(w).Encode(status)
+		return
+	}
+
+	status.Path = ytdlpPath
+
+	// Get version
+	cmd := exec.Command(ytdlpPath, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		status.Installed = false
+		status.Error = fmt.Sprintf("yt-dlp found but failed to get version: %v", err)
+		json.NewEncoder(w).Encode(status)
+		return
+	}
+
+	status.Version = strings.TrimSpace(string(output))
 	status.Installed = true
 	json.NewEncoder(w).Encode(status)
 }

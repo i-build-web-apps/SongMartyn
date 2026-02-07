@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"songmartyn/internal/device"
@@ -26,27 +27,27 @@ type MessageType string
 
 const (
 	// Client -> Server
-	MsgHandshake      MessageType = "handshake"       // Initial connection with MartynKey
-	MsgSearch         MessageType = "search"          // Search for songs
-	MsgQueueAdd       MessageType = "queue_add"       // Add song to queue
-	MsgQueueRemove    MessageType = "queue_remove"    // Remove song from queue
-	MsgQueueMove      MessageType = "queue_move"      // Move song in queue
-	MsgQueueClear     MessageType = "queue_clear"     // Clear entire queue
-	MsgPlay           MessageType = "play"            // Play/resume
-	MsgPause          MessageType = "pause"           // Pause
-	MsgSkip           MessageType = "skip"            // Skip current song
-	MsgSeek           MessageType = "seek"            // Seek to position
-	MsgVocalAssist    MessageType = "vocal_assist"    // Set vocal assist level
-	MsgVolume         MessageType = "volume"          // Set volume
-	MsgKeyChange      MessageType = "key_change"      // Set pitch shift in semitones
-	MsgTempoChange    MessageType = "tempo_change"    // Set tempo/speed multiplier
+	MsgHandshake      MessageType = "handshake"        // Initial connection with MartynKey
+	MsgSearch         MessageType = "search"           // Search for songs
+	MsgQueueAdd       MessageType = "queue_add"        // Add song to queue
+	MsgQueueRemove    MessageType = "queue_remove"     // Remove song from queue
+	MsgQueueMove      MessageType = "queue_move"       // Move song in queue
+	MsgQueueClear     MessageType = "queue_clear"      // Clear entire queue
+	MsgPlay           MessageType = "play"             // Play/resume
+	MsgPause          MessageType = "pause"            // Pause
+	MsgSkip           MessageType = "skip"             // Skip current song
+	MsgSeek           MessageType = "seek"             // Seek to position
+	MsgVocalAssist    MessageType = "vocal_assist"     // Set vocal assist level
+	MsgVolume         MessageType = "volume"           // Set volume
+	MsgKeyChange      MessageType = "key_change"       // Set pitch shift in semitones
+	MsgTempoChange    MessageType = "tempo_change"     // Set tempo/speed multiplier
 	MsgSetDisplayName MessageType = "set_display_name" // Set custom display name
-	MsgAutoplay       MessageType = "autoplay"        // Toggle autoplay
-	MsgQueueShuffle   MessageType = "queue_shuffle"   // Shuffle queue
-	MsgQueueRequeue   MessageType = "queue_requeue"   // Re-add song from history
-	MsgSetAFK         MessageType = "set_afk"         // Set AFK status
-	MsgAddFavorite    MessageType = "add_favorite"    // Add song to favorites
-	MsgRemoveFavorite MessageType = "remove_favorite" // Remove song from favorites
+	MsgAutoplay       MessageType = "autoplay"         // Toggle autoplay
+	MsgQueueShuffle   MessageType = "queue_shuffle"    // Shuffle queue
+	MsgQueueRequeue   MessageType = "queue_requeue"    // Re-add song from history
+	MsgSetAFK         MessageType = "set_afk"          // Set AFK status
+	MsgAddFavorite    MessageType = "add_favorite"     // Add song to favorites
+	MsgRemoveFavorite MessageType = "remove_favorite"  // Remove song from favorites
 
 	// Admin messages (Client -> Server)
 	MsgAdminSetAdmin    MessageType = "admin_set_admin"     // Promote/demote user to admin
@@ -55,12 +56,12 @@ const (
 	MsgAdminUnblock     MessageType = "admin_unblock"       // Unblock a user
 	MsgAdminSetAFK      MessageType = "admin_set_afk"       // Set user's AFK status
 	MsgAdminPlayNext    MessageType = "admin_play_next"     // Start next song with countdown
-	MsgAdminStartNow    MessageType = "admin_start_now"    // Start next song immediately (skip countdown)
+	MsgAdminStartNow    MessageType = "admin_start_now"     // Start next song immediately (skip countdown)
 	MsgAdminStop        MessageType = "admin_stop"          // Stop playback and enter pending mode
 	MsgAdminSetName     MessageType = "admin_set_name"      // Change user's display name
 	MsgAdminSetNameLock MessageType = "admin_set_name_lock" // Lock/unlock user's name
-	MsgAdminToggleBGM   MessageType = "admin_toggle_bgm"   // Toggle background music
-	MsgAdminSetMessage  MessageType = "admin_set_message"  // Set holding screen message
+	MsgAdminToggleBGM   MessageType = "admin_toggle_bgm"    // Toggle background music
+	MsgAdminSetMessage  MessageType = "admin_set_message"   // Set holding screen message
 
 	// Server -> Client
 	MsgWelcome      MessageType = "welcome"       // Session restored/created
@@ -97,6 +98,22 @@ type Client struct {
 	session   *models.Session
 	ipAddress string
 	userAgent string
+
+	// Rate limiting: sliding window of message timestamps
+	msgTimes   [30]int64 // circular buffer of unix-millis for last N messages
+	msgTimesAt int       // next write index
+}
+
+// rateLimit returns true if the message should be dropped (client is sending too fast).
+// Allows 30 messages per second per client.
+func (c *Client) rateLimit() bool {
+	now := time.Now().UnixMilli()
+	oldest := c.msgTimes[c.msgTimesAt] // the slot we're about to overwrite
+	c.msgTimes[c.msgTimesAt] = now
+	c.msgTimesAt = (c.msgTimesAt + 1) % len(c.msgTimes)
+
+	// If the oldest message in our window is less than 1 second ago, we've exceeded the limit
+	return oldest != 0 && (now-oldest) < 1000
 }
 
 // ClientInfo contains client connection info for admin display
@@ -161,15 +178,19 @@ type AdminSetNameLockPayload struct {
 
 // SetDisplayNamePayload is the payload for setting display name and avatar
 type SetDisplayNamePayload struct {
-	DisplayName  string              `json:"display_name"`
-	AvatarID     string              `json:"avatar_id,omitempty"`
+	DisplayName  string               `json:"display_name"`
+	AvatarID     string               `json:"avatar_id,omitempty"`
 	AvatarConfig *models.AvatarConfig `json:"avatar_config,omitempty"`
 }
 
 // QueueAddPayload is the payload for adding a song to the queue
 type QueueAddPayload struct {
-	SongID      string                  `json:"song_id"`
-	VocalAssist models.VocalAssistLevel `json:"vocal_assist"`
+	SongID       string                  `json:"song_id"`
+	VocalAssist  models.VocalAssistLevel `json:"vocal_assist"`
+	Title        string                  `json:"title,omitempty"`
+	Artist       string                  `json:"artist,omitempty"`
+	Duration     int                     `json:"duration,omitempty"`
+	ThumbnailURL string                  `json:"thumbnail_url,omitempty"`
 }
 
 // QueueMovePayload is the payload for moving a song in the queue
@@ -189,7 +210,7 @@ type Hub struct {
 	// Callbacks for handling messages
 	onHandshake        func(client *Client, payload HandshakePayload) (*models.Session, *models.RoomState)
 	onSearch           func(client *Client, query string)
-	onQueueAdd         func(client *Client, songID string, vocalAssist models.VocalAssistLevel)
+	onQueueAdd         func(client *Client, payload QueueAddPayload)
 	onQueueRemove      func(client *Client, songID string)
 	onQueueMove        func(client *Client, from int, to int)
 	onQueueClear       func(client *Client)
@@ -261,15 +282,27 @@ func (h *Hub) Run() {
 
 		case message := <-h.broadcast:
 			h.mu.RLock()
+			var stale []*Client
 			for client := range h.clients {
 				select {
 				case client.send <- message:
 				default:
-					close(client.send)
-					delete(h.clients, client)
+					stale = append(stale, client)
 				}
 			}
 			h.mu.RUnlock()
+
+			// Clean up stale clients under write lock
+			if len(stale) > 0 {
+				h.mu.Lock()
+				for _, client := range stale {
+					if _, ok := h.clients[client]; ok {
+						close(client.send)
+						delete(h.clients, client)
+					}
+				}
+				h.mu.Unlock()
+			}
 		}
 	}
 }
@@ -428,7 +461,7 @@ func (h *Hub) SetHandlers(handlers HubHandlers) {
 type HubHandlers struct {
 	OnHandshake        func(client *Client, payload HandshakePayload) (*models.Session, *models.RoomState)
 	OnSearch           func(client *Client, query string)
-	OnQueueAdd         func(client *Client, songID string, vocalAssist models.VocalAssistLevel)
+	OnQueueAdd         func(client *Client, payload QueueAddPayload)
 	OnQueueRemove      func(client *Client, songID string)
 	OnQueueMove        func(client *Client, from int, to int)
 	OnQueueClear       func(client *Client)
@@ -490,6 +523,12 @@ func (c *Client) readPump() {
 		var msg Message
 		if err := json.Unmarshal(data, &msg); err != nil {
 			log.Printf("[WS ERROR] Invalid message format from %s: %v (data: %s)", clientID, err, string(data[:min(100, len(data))]))
+			continue
+		}
+
+		// Rate limit: drop messages if the client is sending too fast
+		if c.rateLimit() {
+			log.Printf("[WS WARN] Rate limited message '%s' from %s", msg.Type, clientID)
 			continue
 		}
 
@@ -557,7 +596,7 @@ func (c *Client) handleMessage(msg Message) {
 			return
 		}
 		if c.hub.onQueueAdd != nil {
-			c.hub.onQueueAdd(c, payload.SongID, payload.VocalAssist)
+			c.hub.onQueueAdd(c, payload)
 		}
 
 	case MsgQueueRemove:

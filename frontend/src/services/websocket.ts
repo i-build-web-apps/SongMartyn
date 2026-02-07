@@ -179,8 +179,10 @@ class WebSocketService {
     this.send('search', query);
   }
 
-  queueAdd(songId: string, vocalAssist?: string): void {
-    this.send('queue_add', { song_id: songId, vocal_assist: vocalAssist || 'OFF' });
+  queueAdd(songId: string, vocalAssist?: string, meta?: {
+    title?: string; artist?: string; duration?: number; thumbnail_url?: string;
+  }): void {
+    this.send('queue_add', { song_id: songId, vocal_assist: vocalAssist || 'OFF', ...meta });
   }
 
   queueRemove(songId: string): void {

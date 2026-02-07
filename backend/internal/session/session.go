@@ -293,7 +293,7 @@ func (m *Manager) GetActiveSessions() []models.Session {
 	defer m.mu.RUnlock()
 
 	cutoff := time.Now().Add(-1 * time.Hour)
-	var active []models.Session
+	active := make([]models.Session, 0)
 
 	for _, session := range m.sessions {
 		if session.LastSeenAt.After(cutoff) {

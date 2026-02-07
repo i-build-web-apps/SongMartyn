@@ -107,10 +107,16 @@ export const useRoomStore = create<RoomStore>((set) => ({
 
   updateState: (state) =>
     set((currentState) => {
+      const sessions = state.sessions ?? [];
+      const queue = state.queue ?? currentState.queue;
+      if (queue.songs == null) {
+        queue.songs = [];
+      }
+
       // Sync the user's session with server state (e.g., when admin sets AFK, favorites change)
       let updatedSession = currentState.session;
       if (currentState.session) {
-        const serverSession = state.sessions.find(
+        const serverSession = sessions.find(
           (s) => s.martyn_key === currentState.session?.martyn_key
         );
         if (serverSession) {
@@ -125,9 +131,9 @@ export const useRoomStore = create<RoomStore>((set) => ({
 
       return {
         player: state.player,
-        queue: state.queue,
+        queue,
         countdown: state.countdown || initialCountdownState,
-        sessions: state.sessions,
+        sessions,
         session: updatedSession,
       };
     }),

@@ -15,10 +15,11 @@ dist-ssr/
 backend/songmartyn
 backend/bin/
 
-# Environment files (contain secrets)
+# Environment / config files (contain secrets)
 .env
 .env.local
 .env.*.local
+songmartyn.config
 
 # Certificates (generated locally)
 certs/

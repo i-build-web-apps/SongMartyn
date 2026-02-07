@@ -8,6 +8,7 @@ import { wsService } from '../services/websocket';
 import type { ClientInfo, LibraryLocation, AvatarConfig, BGMSourceType, IcecastStream } from '../types';
 import { HelpModal, HelpButton, useHelpModal } from '../components/HelpModal';
 import { MPVSetupModal } from '../components/MPVSetupModal';
+import { YtDlpSetupModal } from '../components/YtDlpSetupModal';
 import { buildAvatarUrl } from '../components/AvatarCreator';
 import { Footer } from '../components/Footer';
 
@@ -908,7 +909,7 @@ function DirectoryPicker({
       const data: BrowseDirsResponse = await res.json();
       setCurrentPath(data.current);
       setParentPath(data.parent);
-      setDirectories(data.dirs);
+      setDirectories(data.dirs ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to browse');
     } finally {
@@ -1017,12 +1018,20 @@ function LibraryManagement() {
   const [newName, setNewName] = useState('');
   const [scanningId, setScanningId] = useState<number | null>(null);
   const [showDirPicker, setShowDirPicker] = useState(false);
+  const [scanResult, setScanResult] = useState<string | null>(null);
   const { activeHelp, openHelp, closeHelp } = useHelpModal();
 
   useEffect(() => {
     fetchLocations();
     fetchStats();
   }, [fetchLocations, fetchStats]);
+
+  // Auto-dismiss scan result after 4 seconds
+  useEffect(() => {
+    if (!scanResult) return;
+    const timer = setTimeout(() => setScanResult(null), 4000);
+    return () => clearTimeout(timer);
+  }, [scanResult]);
 
   const handleAddLocation = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1048,7 +1057,7 @@ function LibraryManagement() {
         const count = await scanLocation(newLocation.id);
         setScanningId(null);
         if (count !== null) {
-          alert(`Found ${count} songs in ${newLocation.name}`);
+          setScanResult(`Found ${count} songs in ${newLocation.name}`);
           fetchStats();
         }
       }
@@ -1060,7 +1069,7 @@ function LibraryManagement() {
     const count = await scanLocation(location.id);
     setScanningId(null);
     if (count !== null) {
-      alert(`Found ${count} songs in ${location.name}`);
+      setScanResult(`Found ${count} songs in ${location.name}`);
       fetchStats();
     }
   };
@@ -1098,6 +1107,17 @@ function LibraryManagement() {
       {error && (
         <div className="px-6 py-3 bg-red-500/20 text-red-400 text-sm">
           {error}
+        </div>
+      )}
+
+      {scanResult && (
+        <div className="px-6 py-3 bg-green-500/20 text-green-400 text-sm flex items-center justify-between">
+          <span>{scanResult}</span>
+          <button onClick={() => setScanResult(null)} className="text-green-400/60 hover:text-green-400 ml-2">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
       )}
 
@@ -1639,6 +1659,8 @@ interface DiagnosticsInfo {
   displays: DisplayInfo[];
   firewall_enabled: boolean;
   firewall_status: string;
+  ytdlp_installed: boolean;
+  ytdlp_version: string;
 }
 
 interface ServerSettings {
@@ -1651,6 +1673,7 @@ interface ServerSettings {
   // Display settings
   target_display: string;
   auto_fullscreen: boolean;
+  video_quality: string;
   // Feature toggles
   pitch_control_enabled: boolean;
   tempo_control_enabled: boolean;
@@ -1689,6 +1712,7 @@ function DiagnosticsTab() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsInfo | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
+  const [showYtDlpSetup, setShowYtDlpSetup] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   const API_BASE = window.location.origin;
@@ -1950,6 +1974,41 @@ function DiagnosticsTab() {
                 <div className="text-gray-500 text-center py-4">No displays detected</div>
               )}
             </div>
+
+            {/* yt-dlp Status */}
+            <div>
+              <h3 className="text-white font-medium mb-3 flex items-center gap-2">
+                <svg className="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
+                </svg>
+                YouTube Downloads (yt-dlp)
+              </h3>
+              <div className="bg-matte-black p-3 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-2.5 h-2.5 rounded-full ${diagnostics.ytdlp_installed ? 'bg-green-500' : 'bg-red-500'}`} />
+                    <span className="text-white">
+                      {diagnostics.ytdlp_installed ? `yt-dlp v${diagnostics.ytdlp_version}` : 'yt-dlp not found'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowYtDlpSetup(true)}
+                    className="px-3 py-1.5 bg-blue-500/20 text-blue-400 rounded-lg text-xs hover:bg-blue-500/30 transition-colors flex items-center gap-1.5"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    {diagnostics.ytdlp_installed ? 'Details' : 'Install yt-dlp'}
+                  </button>
+                </div>
+                {!diagnostics.ytdlp_installed && (
+                  <p className="text-gray-500 text-xs mt-2">
+                    YouTube search works without yt-dlp, but queueing YouTube songs requires it for downloading.
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
         ) : (
           <div className="p-8 text-center text-gray-500">
@@ -1961,6 +2020,8 @@ function DiagnosticsTab() {
           </div>
         )}
       </div>
+
+      <YtDlpSetupModal isOpen={showYtDlpSetup} onClose={() => setShowYtDlpSetup(false)} />
     </div>
   );
 }
@@ -1977,6 +2038,7 @@ function GeneralSettings() {
     // Display settings
     target_display: '',
     auto_fullscreen: true,
+    video_quality: '',
     // Feature toggles
     pitch_control_enabled: true,
     tempo_control_enabled: true,
@@ -2027,8 +2089,9 @@ function GeneralSettings() {
   const [showStreamPicker, setShowStreamPicker] = useState(false);
 
 
-  // MPV Setup Modal
+  // Setup Modals
   const [showMpvSetup, setShowMpvSetup] = useState(false);
+  const [showYtDlpSetup, setShowYtDlpSetup] = useState(false);
 
   const fetchBgmSettings = async () => {
     try {
@@ -2540,6 +2603,24 @@ function GeneralSettings() {
             </div>
           </div>
 
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <label className="block text-sm text-gray-400">YouTube Downloads</label>
+              <HelpButton onClick={() => openHelp('ytdlp')} />
+            </div>
+            <p className="text-xs text-gray-500 mb-2">Required to download and play YouTube songs</p>
+            <button
+              type="button"
+              onClick={() => setShowYtDlpSetup(true)}
+              className="px-4 py-3 bg-blue-500/20 text-blue-400 rounded-xl hover:bg-blue-500/30 transition-colors flex items-center gap-2 whitespace-nowrap"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              Install yt-dlp
+            </button>
+          </div>
+
           {/* Display Settings */}
           <div className="border-t border-white/5 pt-4 mt-4">
             <h3 className="text-md font-semibold text-white mb-4">Display Settings</h3>
@@ -2580,6 +2661,22 @@ function GeneralSettings() {
                   <div className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${settings.auto_fullscreen ? 'translate-x-6' : 'translate-x-1'}`} />
                 </div>
               </label>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Video Quality</label>
+                <select
+                  value={settings.video_quality}
+                  onChange={(e) => setSettings({ ...settings, video_quality: e.target.value })}
+                  className="w-full px-4 py-3 bg-matte-black rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-yellow-neon"
+                >
+                  <option value="">Off (Default)</option>
+                  <option value="enhanced">Enhanced (Sharp Upscale)</option>
+                  <option value="softened">Softened (Blur + Upscale)</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Improve low-quality video playback. &quot;Enhanced&quot; sharpens upscaled content. &quot;Softened&quot; blurs away pixelation and artifacts.
+                </p>
+              </div>
             </div>
           </div>
 
@@ -2825,6 +2922,7 @@ function GeneralSettings() {
       <HelpModal topic={activeHelp} isOpen={true} onClose={closeHelp} />
     )}
     <MPVSetupModal isOpen={showMpvSetup} onClose={() => setShowMpvSetup(false)} />
+    <YtDlpSetupModal isOpen={showYtDlpSetup} onClose={() => setShowYtDlpSetup(false)} />
     </>
   );
 }
@@ -3089,7 +3187,11 @@ function QueueManagement() {
 
   // Filter songs based on active tab
   const historySongs = queue.filter((_, index) => index < currentPosition);
-  const queueSongs = queue.filter((_, index) => index >= currentPosition);
+  // Currently playing song (only if not idle)
+  const nowPlayingSong = !idle && currentPosition >= 0 && currentPosition < queue.length ? queue[currentPosition] : null;
+  // Upcoming songs — everything after current (or from current if idle)
+  const upcomingStart = nowPlayingSong ? currentPosition + 1 : currentPosition;
+  const queueSongs = queue.filter((_, index) => index >= upcomingStart);
 
   const handleToggleAutoplay = () => {
     wsService.setAutoplay(!autoplay);
@@ -3115,27 +3217,27 @@ function QueueManagement() {
     }
   };
 
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    setDraggedIndex(index);
+  const handleDragStart = (e: React.DragEvent, queueIndex: number) => {
+    setDraggedIndex(queueIndex);
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', index.toString());
+    e.dataTransfer.setData('text/plain', queueIndex.toString());
   };
 
-  const handleDragOver = (e: React.DragEvent, index: number) => {
+  const handleDragOver = (e: React.DragEvent, queueIndex: number) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    setDragOverIndex(index);
+    setDragOverIndex(queueIndex);
   };
 
   const handleDragLeave = () => {
     setDragOverIndex(null);
   };
 
-  const handleDrop = (e: React.DragEvent, toIndex: number) => {
+  const handleDrop = (e: React.DragEvent, toQueueIndex: number) => {
     e.preventDefault();
-    const fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
-    if (fromIndex !== toIndex) {
-      wsService.queueMove(fromIndex, toIndex);
+    const fromQueueIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
+    if (fromQueueIndex !== toQueueIndex) {
+      wsService.queueMove(fromQueueIndex, toQueueIndex);
     }
     setDraggedIndex(null);
     setDragOverIndex(null);
@@ -3240,7 +3342,7 @@ function QueueManagement() {
           </div>
 
           {/* Pitch & Tempo Controls (only when playing) */}
-          {!idle && (
+          {nowPlayingSong && (
             <div className="mt-4 pt-4 border-t border-white/5">
               <div className="flex items-center gap-6">
                 {/* Key Change (Pitch) */}
@@ -3249,8 +3351,7 @@ function QueueManagement() {
                     <label className="text-sm text-gray-400">Key</label>
                     <span className="text-sm font-mono text-white">
                       {(() => {
-                        const currentSong = queue[currentPosition];
-                        const semitones = currentSong?.key_change || 0;
+                        const semitones = nowPlayingSong.key_change || 0;
                         if (semitones === 0) return '0';
                         return semitones > 0 ? `+${semitones}` : `${semitones}`;
                       })()}
@@ -3261,7 +3362,7 @@ function QueueManagement() {
                     min="-12"
                     max="12"
                     step="1"
-                    value={queue[currentPosition]?.key_change || 0}
+                    value={nowPlayingSong.key_change || 0}
                     onChange={(e) => wsService.setKeyChange(parseInt(e.target.value, 10))}
                     className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-yellow-neon"
                   />
@@ -3277,7 +3378,7 @@ function QueueManagement() {
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-sm text-gray-400">Tempo</label>
                     <span className="text-sm font-mono text-white">
-                      {((queue[currentPosition]?.tempo_change || 1) * 100).toFixed(0)}%
+                      {((nowPlayingSong.tempo_change || 1) * 100).toFixed(0)}%
                     </span>
                   </div>
                   <input
@@ -3285,7 +3386,7 @@ function QueueManagement() {
                     min="0.5"
                     max="2.0"
                     step="0.05"
-                    value={queue[currentPosition]?.tempo_change || 1}
+                    value={nowPlayingSong.tempo_change || 1}
                     onChange={(e) => wsService.setTempoChange(parseFloat(e.target.value))}
                     className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-400"
                   />
@@ -3311,6 +3412,72 @@ function QueueManagement() {
           )}
         </div>
 
+        {/* Now Playing — non-draggable, shown above the queue list */}
+        {activeTab === 'queue' && nowPlayingSong && (
+          <div className="px-6 py-4 border-b border-yellow-neon/20 bg-yellow-neon/5">
+            <div className="flex items-center gap-4">
+              {/* Now Playing indicator (no drag handle) */}
+              <div className="w-12 shrink-0 flex items-center justify-center">
+                <div className="w-3 h-3 bg-yellow-neon rounded-full animate-pulse" />
+              </div>
+
+              {/* Thumbnail */}
+              <div className="w-12 h-12 rounded-lg overflow-hidden bg-matte-black shrink-0">
+                {nowPlayingSong.thumbnail_url ? (
+                  <img src={nowPlayingSong.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-gray-600">
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                    </svg>
+                  </div>
+                )}
+              </div>
+
+              {/* Song Info */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-medium truncate text-yellow-neon">{nowPlayingSong.title}</h3>
+                  <span className="px-2 py-0.5 bg-yellow-neon text-indigo-deep text-xs font-bold rounded shrink-0">
+                    NOW PLAYING
+                  </span>
+                </div>
+                <p className="text-sm text-gray-400 truncate">{nowPlayingSong.artist}</p>
+                <p className="text-xs text-gray-500 truncate">
+                  <span className="text-purple-400">{getSingerName(nowPlayingSong.added_by)}</span>
+                </p>
+              </div>
+
+              {/* Duration */}
+              <div className="text-gray-400 text-sm shrink-0">
+                {formatDuration(nowPlayingSong.duration)}
+              </div>
+
+              {/* Vocal Assist Level */}
+              <div className={`px-2 py-1 rounded text-xs font-medium shrink-0 ${
+                nowPlayingSong.vocal_assist === 'OFF' ? 'bg-gray-700 text-gray-400' :
+                nowPlayingSong.vocal_assist === 'LOW' ? 'bg-blue-500/20 text-blue-400' :
+                nowPlayingSong.vocal_assist === 'MED' ? 'bg-purple-500/20 text-purple-400' :
+                'bg-green-500/20 text-green-400'
+              }`}>
+                {nowPlayingSong.vocal_assist}
+              </div>
+
+              {/* Skip button instead of remove for now playing */}
+              <button
+                onClick={() => wsService.skip()}
+                className="p-2 text-gray-500 hover:text-yellow-neon hover:bg-yellow-neon/10 rounded-lg transition-colors shrink-0"
+                title="Skip song"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 5v14" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Queue List */}
         <div className="divide-y divide-white/5">
           {activeTab === 'queue' && queueSongs.length === 0 ? (
@@ -3330,34 +3497,37 @@ function QueueManagement() {
               <p className="text-gray-600 text-sm mt-1">Previously played songs will appear here</p>
             </div>
           ) : (
-            (activeTab === 'queue' ? queueSongs : historySongs.slice().reverse()).map((song) => {
-              const index = queue.findIndex(s => s.id === song.id);
+            (activeTab === 'queue' ? queueSongs : historySongs.slice().reverse()).map((song, displayIdx) => {
+              const queueIndex = activeTab === 'queue'
+                ? queue.findIndex(s => s.id === song.id)
+                : queue.findIndex(s => s.id === song.id);
+              const isQueueTab = activeTab === 'queue';
               return (
               <div
                 key={song.id}
-                draggable
-                onDragStart={(e) => handleDragStart(e, index)}
-                onDragOver={(e) => handleDragOver(e, index)}
-                onDragLeave={handleDragLeave}
-                onDrop={(e) => handleDrop(e, index)}
-                onDragEnd={handleDragEnd}
-                className={`flex items-center gap-4 px-6 py-4 transition-all cursor-grab active:cursor-grabbing ${
-                  index === currentPosition ? 'bg-yellow-neon/10' : ''
+                draggable={isQueueTab}
+                onDragStart={isQueueTab ? (e) => handleDragStart(e, queueIndex) : undefined}
+                onDragOver={isQueueTab ? (e) => handleDragOver(e, queueIndex) : undefined}
+                onDragLeave={isQueueTab ? handleDragLeave : undefined}
+                onDrop={isQueueTab ? (e) => handleDrop(e, queueIndex) : undefined}
+                onDragEnd={isQueueTab ? handleDragEnd : undefined}
+                className={`flex items-center gap-4 px-6 py-4 transition-all ${
+                  isQueueTab ? 'cursor-grab active:cursor-grabbing' : ''
                 } ${
-                  draggedIndex === index ? 'opacity-50' : ''
+                  draggedIndex === queueIndex ? 'opacity-50' : ''
                 } ${
-                  dragOverIndex === index ? 'border-t-2 border-yellow-neon' : ''
+                  dragOverIndex === queueIndex ? 'border-t-2 border-yellow-neon' : ''
                 }`}
               >
                 {/* Position & Drag Handle */}
                 <div className="flex items-center gap-2 w-12 shrink-0">
-                  <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
-                  </svg>
-                  <span className={`text-sm font-medium ${
-                    index === currentPosition ? 'text-yellow-neon' : 'text-gray-500'
-                  }`}>
-                    {index + 1}
+                  {isQueueTab && (
+                    <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                    </svg>
+                  )}
+                  <span className="text-sm font-medium text-gray-500">
+                    {isQueueTab ? displayIdx + 1 : queueIndex + 1}
                   </span>
                 </div>
 
@@ -3377,16 +3547,9 @@ function QueueManagement() {
                 {/* Song Info */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <h3 className={`font-medium truncate ${
-                      index === currentPosition ? 'text-yellow-neon' : 'text-white'
-                    }`}>
+                    <h3 className="font-medium truncate text-white">
                       {song.title}
                     </h3>
-                    {index === currentPosition && (
-                      <span className="px-2 py-0.5 bg-yellow-neon text-indigo-deep text-xs font-bold rounded shrink-0">
-                        NOW PLAYING
-                      </span>
-                    )}
                   </div>
                   <p className="text-sm text-gray-400 truncate">{song.artist}</p>
                   <p className="text-xs text-gray-500 truncate">

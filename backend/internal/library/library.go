@@ -190,7 +190,7 @@ func (m *Manager) GetLocations() ([]models.LibraryLocation, error) {
 	}
 	defer rows.Close()
 
-	var locations []models.LibraryLocation
+	locations := make([]models.LibraryLocation, 0)
 	for rows.Next() {
 		var loc models.LibraryLocation
 		var addedAtStr, lastScanStr string

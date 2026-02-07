@@ -22,6 +22,7 @@ type DisplaySettings struct {
 	TargetDisplay  string // Name of display to use (empty = auto/primary)
 	ScreenIndex    int    // Screen index for mpv (0-based, -1 = auto)
 	AutoFullscreen bool   // Automatically fullscreen on startup
+	VideoQuality   string // Video quality mode: "" (off), "enhanced", "softened"
 }
 
 // Controller manages the mpv media player instance
@@ -38,10 +39,10 @@ type Controller struct {
 	displaySettings DisplaySettings
 
 	// Track content type for end-file handling
-	playingSong       bool    // true when playing a song (vs holding screen/image)
-	currentPlaylistID int64   // playlist_entry_id of current content
-	songDuration      float64 // duration of current song in seconds
-	lastPosition      float64 // last known position for end detection
+	playingSong       bool          // true when playing a song (vs holding screen/image)
+	currentPlaylistID int64         // playlist_entry_id of current content
+	songDuration      float64       // duration of current song in seconds
+	lastPosition      float64       // last known position for end detection
 	stopMonitor       chan struct{} // channel to stop playback monitor
 
 	// Callbacks
@@ -75,6 +76,44 @@ func (c *Controller) SetDisplaySettings(settings DisplaySettings) {
 	c.displaySettings = settings
 	log.Printf("[MPV] Display settings updated: screen=%d, fullscreen=%v, target=%s",
 		settings.ScreenIndex, settings.AutoFullscreen, settings.TargetDisplay)
+}
+
+// ApplyVideoQuality applies video quality settings to a running mpv instance
+func (c *Controller) ApplyVideoQuality(quality string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("mpv not connected")
+	}
+
+	// Clear existing video filters first
+	c.conn.Set("vf", "")
+
+	switch quality {
+	case "enhanced":
+		c.conn.Set("scale", "ewa_lanczossharp")
+		c.conn.Set("dscale", "mitchell")
+		c.conn.Set("cscale", "ewa_lanczossharp")
+		c.conn.Set("correct-downscaling", "yes")
+		c.conn.Set("sigmoid-upscaling", "yes")
+		log.Printf("[MPV] Applied video quality: enhanced")
+	case "softened":
+		c.conn.Set("scale", "ewa_lanczossharp")
+		c.conn.Set("cscale", "ewa_lanczossharp")
+		c.conn.Set("vf", "lavfi=[smartblur=1.5:0.5:0]")
+		log.Printf("[MPV] Applied video quality: softened")
+	default:
+		// Reset to defaults
+		c.conn.Set("scale", "lanczos")
+		c.conn.Set("dscale", "hermite")
+		c.conn.Set("cscale", "lanczos")
+		c.conn.Set("correct-downscaling", "no")
+		c.conn.Set("sigmoid-upscaling", "no")
+		log.Printf("[MPV] Applied video quality: default")
+	}
+
+	return nil
 }
 
 // GetDisplaySettings returns the current display settings
@@ -328,10 +367,10 @@ func (c *Controller) Start() error {
 		"--force-window=yes",
 		"--keep-open=yes",
 		"--input-ipc-server=" + c.socketPath,
-		"--hwdec=auto",    // Hardware acceleration
+		"--hwdec=auto", // Hardware acceleration
 		"--volume=100",
-		"--osc=no",        // Disable on-screen controller
-		"--osd-level=0",   // Minimal OSD
+		"--osc=no",      // Disable on-screen controller
+		"--osd-level=0", // Minimal OSD
 	}
 
 	// Display/screen selection
@@ -348,6 +387,28 @@ func (c *Controller) Start() error {
 		log.Printf("[MPV] Starting in fullscreen mode")
 	} else {
 		args = append(args, "--fullscreen=no")
+	}
+
+	// Video quality enhancement
+	switch c.displaySettings.VideoQuality {
+	case "enhanced":
+		// High-quality scaling for low-res content (CDG, old videos)
+		args = append(args,
+			"--scale=ewa_lanczossharp",
+			"--dscale=mitchell",
+			"--cscale=ewa_lanczossharp",
+			"--correct-downscaling=yes",
+			"--sigmoid-upscaling=yes",
+		)
+		log.Printf("[MPV] Video quality: enhanced (high-quality scaling)")
+	case "softened":
+		// Soften/blur to hide compression artifacts and pixelation
+		args = append(args,
+			"--scale=ewa_lanczossharp",
+			"--cscale=ewa_lanczossharp",
+			"--vf=lavfi=[smartblur=1.5:0.5:0]",
+		)
+		log.Printf("[MPV] Video quality: softened (blur + upscale)")
 	}
 
 	// Platform-specific audio output
@@ -427,14 +488,22 @@ func (c *Controller) Stop() error {
 }
 
 // StopPlayback stops the current playback without terminating MPV
-// This stops playback and clears the playlist
+// This stops playback, clears the playlist, and cleans up the playback monitor
 func (c *Controller) StopPlayback() error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.stopPlaybackMonitor()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if c.conn == nil {
 		return fmt.Errorf("mpv not connected")
 	}
+
+	c.playingSong = false
+
+	// Clear any external audio/filter from CDG or vocal-mix playback
+	c.conn.Set("audio-files", "")
+	c.conn.Set("lavfi-complex", "")
 
 	// Use the stop command which stops playback and clears playlist
 	_, err := c.conn.Call("stop")
@@ -493,13 +562,33 @@ func (c *Controller) LoadFile(path string) error {
 		return fmt.Errorf("mpv not connected")
 	}
 
+	// Verify file exists and is not empty before sending to mpv
+	if info, err := os.Stat(path); err != nil {
+		log.Printf("[MPV] LoadFile FAILED - file not found: %s (err: %v)", path, err)
+		return fmt.Errorf("file not found: %s: %w", path, err)
+	} else if info.Size() == 0 {
+		log.Printf("[MPV] LoadFile FAILED - file is empty (0 bytes): %s", path)
+		return fmt.Errorf("file is empty (0 bytes): %s", path)
+	} else {
+		log.Printf("[MPV] LoadFile: %s (size: %d bytes)", path, info.Size())
+	}
+
 	// Reset volume to 100 (may have been set to 0 by BGM fade-out)
 	c.conn.Set("volume", 100)
 
 	// Reset loop settings from image display
 	c.conn.Set("loop-file", "no")
 
+	// Clear any external audio/filter from previous CDG or vocal-mix playback
+	c.conn.Set("audio-files", "")
+	c.conn.Set("lavfi-complex", "")
+
 	_, err := c.conn.Call("loadfile", path)
+	if err != nil {
+		log.Printf("[MPV] LoadFile mpv command failed: %v", err)
+	} else {
+		log.Printf("[MPV] LoadFile success: %s", filepath.Base(path))
+	}
 	return err
 }
 
@@ -675,43 +764,70 @@ func (c *Controller) LoadCDG(cdgPath, audioPath string) error {
 		return fmt.Errorf("mpv not connected")
 	}
 
+	// Verify both files exist and are not empty
+	cdgInfo, cdgErr := os.Stat(cdgPath)
+	audioInfo, audioErr := os.Stat(audioPath)
+	if cdgErr != nil {
+		c.mu.Unlock()
+		log.Printf("[MPV] LoadCDG FAILED - CDG file not found: %s (err: %v)", cdgPath, cdgErr)
+		return fmt.Errorf("CDG file not found: %s: %w", cdgPath, cdgErr)
+	}
+	if cdgInfo.Size() == 0 {
+		c.mu.Unlock()
+		log.Printf("[MPV] LoadCDG FAILED - CDG file is empty (0 bytes): %s", cdgPath)
+		return fmt.Errorf("CDG file is empty (0 bytes): %s", cdgPath)
+	}
+	if audioErr != nil {
+		c.mu.Unlock()
+		log.Printf("[MPV] LoadCDG FAILED - audio file not found: %s (err: %v)", audioPath, audioErr)
+		return fmt.Errorf("audio file not found: %s: %w", audioPath, audioErr)
+	}
+	if audioInfo.Size() == 0 {
+		c.mu.Unlock()
+		log.Printf("[MPV] LoadCDG FAILED - audio file is empty (0 bytes): %s", audioPath)
+		return fmt.Errorf("audio file is empty (0 bytes): %s", audioPath)
+	}
+	log.Printf("[MPV] LoadCDG: cdg=%s (%d bytes), audio=%s (%d bytes)",
+		filepath.Base(cdgPath), cdgInfo.Size(), filepath.Base(audioPath), audioInfo.Size())
+
 	// Mark that we're playing a song
 	c.playingSong = true
 
 	// Reset loop settings from image display
 	c.conn.Set("loop-file", "no")
 
-	// Clear any previous audio-files setting
-	c.conn.Set("audio-files", "")
+	// Reset volume (may have been set to 0 by BGM fade-out)
+	c.conn.Set("volume", 100)
 
-	// Load CDG file first
+	// Clear any lavfi-complex filter from previous vocal-mix playback
+	c.conn.Set("lavfi-complex", "")
+
+	// Set external audio file BEFORE loading CDG — this pairs the audio track
+	// with the CDG graphics. We use set_property instead of per-file options
+	// because file paths with spaces/brackets/commas break mpv's string option
+	// parsing, and the JSON object format isn't supported in all mpv versions.
+	if err := c.conn.Set("audio-files", audioPath); err != nil {
+		c.mu.Unlock()
+		log.Printf("[MPV] LoadCDG: failed to set audio-files property: %v", err)
+		return fmt.Errorf("failed to set audio-files: %w", err)
+	}
+
+	// Load CDG as the primary file — mpv's native CDG demuxer renders the
+	// karaoke graphics, and the audio-files property provides the music.
 	_, err := c.conn.Call("loadfile", cdgPath, "replace")
 	if err != nil {
+		c.conn.Set("audio-files", "") // clean up on failure
 		c.mu.Unlock()
-		return fmt.Errorf("failed to load CDG: %w", err)
+		log.Printf("[MPV] LoadCDG mpv loadfile failed: %v", err)
+		return fmt.Errorf("failed to load CDG+audio: %w", err)
 	}
-	c.mu.Unlock()
-
-	// Wait for CDG to start loading before adding audio
-	time.Sleep(300 * time.Millisecond)
-
-	// Add audio track using audio-add command
-	// This is more reliable than audio-files option for paths with spaces
-	c.mu.Lock()
-	if c.conn != nil {
-		_, err = c.conn.Call("audio-add", audioPath, "select")
-		if err != nil {
-			log.Printf("[MPV] audio-add failed: %v, trying loadfile with audio-files", err)
-			// Fallback: try loadfile with escaped audio-files option
-			escapedPath := strings.ReplaceAll(audioPath, "\\", "\\\\")
-			escapedPath = strings.ReplaceAll(escapedPath, " ", "\\ ")
-			c.conn.Call("loadfile", cdgPath, "replace", "audio-files="+escapedPath)
-		}
-	}
+	log.Printf("[MPV] LoadCDG: cdg=%s loaded as primary, audio=%s via audio-files property",
+		filepath.Base(cdgPath), filepath.Base(audioPath))
 	c.mu.Unlock()
 
 	// Start playback monitor to detect song end
 	c.StartPlaybackMonitor()
+	log.Printf("[MPV] LoadCDG complete, playback monitor started")
 	return nil
 }
 
@@ -971,12 +1087,39 @@ func (c *Controller) SetVocalMix(instrumentalPath, vocalPath string, vocalGain f
 		return fmt.Errorf("mpv not connected")
 	}
 
+	// Verify files exist and are not empty
+	instrInfo, instrErr := os.Stat(instrumentalPath)
+	vocalInfo, vocalErr := os.Stat(vocalPath)
+	if instrErr != nil {
+		c.mu.Unlock()
+		log.Printf("[MPV] SetVocalMix FAILED - instrumental not found: %s (err: %v)", instrumentalPath, instrErr)
+		return fmt.Errorf("instrumental file not found: %s: %w", instrumentalPath, instrErr)
+	}
+	if instrInfo.Size() == 0 {
+		c.mu.Unlock()
+		log.Printf("[MPV] SetVocalMix FAILED - instrumental file is empty (0 bytes): %s", instrumentalPath)
+		return fmt.Errorf("instrumental file is empty (0 bytes): %s", instrumentalPath)
+	}
+	if vocalErr != nil {
+		c.mu.Unlock()
+		log.Printf("[MPV] SetVocalMix FAILED - vocal not found: %s (err: %v)", vocalPath, vocalErr)
+		return fmt.Errorf("vocal file not found: %s: %w", vocalPath, vocalErr)
+	}
+	if vocalInfo.Size() == 0 {
+		c.mu.Unlock()
+		log.Printf("[MPV] SetVocalMix FAILED - vocal file is empty (0 bytes): %s", vocalPath)
+		return fmt.Errorf("vocal file is empty (0 bytes): %s", vocalPath)
+	}
+	log.Printf("[MPV] SetVocalMix: instr=%s (%d bytes), vocal=%s (%d bytes), gain=%.2f",
+		filepath.Base(instrumentalPath), instrInfo.Size(), filepath.Base(vocalPath), vocalInfo.Size(), vocalGain)
+
 	// Mark that we're playing a song
 	c.playingSong = true
 
 	var err error
 	if vocalGain <= 0 {
 		// No vocals needed, just load instrumental
+		log.Printf("[MPV] SetVocalMix: gain=0, loading instrumental only")
 		_, err = c.conn.Call("loadfile", instrumentalPath)
 	} else {
 		// Build lavfi-complex filter for mixing
@@ -985,18 +1128,21 @@ func (c *Controller) SetVocalMix(instrumentalPath, vocalPath string, vocalGain f
 			"[aid1]volume=1.0[instr];[aid2]volume=%.2f[vox];[instr][vox]amix=inputs=2:duration=longest[ao]",
 			vocalGain,
 		)
+		log.Printf("[MPV] SetVocalMix: lavfi-complex filter: %s", filter)
 
-		// Load with external audio file and filter
-		_, err = c.conn.Call("loadfile", instrumentalPath,
-			"replace",
-			fmt.Sprintf("audio-files=%s", vocalPath),
-			fmt.Sprintf("lavfi-complex=%s", filter),
-		)
+		// Set audio-files and lavfi-complex via properties before loadfile.
+		// Can't use per-file options because file paths with spaces break
+		// mpv's string option parsing, and JSON object format isn't supported.
+		c.conn.Set("audio-files", vocalPath)
+		c.conn.Set("lavfi-complex", filter)
+		_, err = c.conn.Call("loadfile", instrumentalPath, "replace")
 	}
 	c.mu.Unlock()
 
-	// Start playback monitor to detect song end
-	if err == nil {
+	if err != nil {
+		log.Printf("[MPV] SetVocalMix mpv command failed: %v", err)
+	} else {
+		log.Printf("[MPV] SetVocalMix success, starting playback monitor")
 		c.StartPlaybackMonitor()
 	}
 	return err
@@ -1038,18 +1184,43 @@ func (c *Controller) StartPlaybackMonitor() {
 		// Wait a moment for MPV to load the file and report duration
 		time.Sleep(1 * time.Second)
 
-		// Get initial duration
+		// Get initial duration and verify playback state
 		c.mu.Lock()
+		initialDurationOK := false
 		if c.conn != nil {
 			if dur, err := c.conn.Get("duration"); err == nil && dur != nil {
 				if f, ok := dur.(float64); ok && f > 0 {
 					c.songDuration = f
+					initialDurationOK = true
 					log.Printf("[MPV Monitor] Song duration: %.1f seconds", f)
+				} else {
+					log.Printf("[MPV Monitor] WARNING: duration returned non-numeric value: %v (type %T)", dur, dur)
 				}
+			} else {
+				log.Printf("[MPV Monitor] WARNING: could not get duration (err: %v, val: %v) - file may not have loaded", err, dur)
+			}
+			// Log current playback state for debugging
+			if pos, err := c.conn.Get("time-pos"); err == nil && pos != nil {
+				log.Printf("[MPV Monitor] Initial position: %v", pos)
+			} else {
+				log.Printf("[MPV Monitor] WARNING: could not get time-pos (err: %v) - playback may not have started", err)
+			}
+			if paused, err := c.conn.Get("pause"); err == nil {
+				log.Printf("[MPV Monitor] Paused: %v", paused)
+			}
+			if idle, err := c.conn.Get("idle-active"); err == nil {
+				log.Printf("[MPV Monitor] Idle-active: %v", idle)
 			}
 		}
 		stopChan := c.stopMonitor
 		c.mu.Unlock()
+
+		// Track how many poll cycles we've seen with no valid playback
+		noPlaybackCycles := 0
+		// If duration was already available, no need for failure detection timeout
+		if initialDurationOK {
+			noPlaybackCycles = -1 // Sentinel: disable timeout
+		}
 
 		for {
 			select {
@@ -1092,6 +1263,29 @@ func (c *Controller) StartPlaybackMonitor() {
 					c.mu.Lock()
 					c.songDuration = duration
 					c.mu.Unlock()
+					noPlaybackCycles = -1 // Got valid duration, disable timeout
+				}
+
+				// Detect failed load: no duration and no position after several seconds
+				// This catches cases where mpv accepted the IPC command but couldn't play the file
+				// (e.g. corrupt files, unsupported formats, or edge cases not caught by end-file event)
+				if noPlaybackCycles >= 0 && duration == 0 && position == 0 {
+					noPlaybackCycles++
+					// 10 cycles * 500ms = 5 seconds with no playback progress
+					if noPlaybackCycles >= 10 {
+						log.Printf("[MPV Monitor] Song failed to load - no playback after %d polls, treating as failed", noPlaybackCycles)
+						c.mu.Lock()
+						c.playingSong = false
+						c.mu.Unlock()
+						c.stopPlaybackMonitor()
+						if c.onTrackEnd != nil {
+							c.onTrackEnd()
+						}
+						return
+					}
+				} else if noPlaybackCycles >= 0 && (duration > 0 || position > 0) {
+					// Playback started, disable timeout
+					noPlaybackCycles = -1
 				}
 
 				// Log position every 10 seconds for debugging
@@ -1181,13 +1375,16 @@ func (c *Controller) listenEvents() {
 
 			fmt.Printf("[MPV EVENT] end-file (reason: %s, playingSong: %v, data: %+v)\n", reason, wasPlayingSong, event.ExtraData)
 
-			// Trigger onTrackEnd when a song reaches natural end (eof)
-			// Must have been playing a song, not just replacing content
-			if reason == "eof" && wasPlayingSong && c.onTrackEnd != nil {
+			// Only handle "error" here — the playback monitor detects natural song endings.
+			// We do NOT handle "eof" because loadfile fires end-file for the OLD content
+			// being replaced, and by that point playingSong is already true for the NEW
+			// content, causing a false skip.
+			if wasPlayingSong && c.onTrackEnd != nil && reason == "error" {
 				c.mu.Lock()
-				c.playingSong = false // Song has ended
+				c.playingSong = false
 				c.mu.Unlock()
-				log.Println("[MPV] Song finished naturally - triggering onTrackEnd")
+				c.stopPlaybackMonitor()
+				log.Printf("[MPV] Song failed to load (end-file error) - skipping to next")
 				c.onTrackEnd()
 			}
 		case "property-change":

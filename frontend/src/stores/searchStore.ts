@@ -289,8 +289,15 @@ export const useSearchStore = create<SearchStore>((set, get) => ({
       }),
     }).catch(err => console.error('Failed to log song selection:', err));
 
-    // Send queue_add via WebSocket with vocal assist level
-    wsService.queueAdd(String(song.id), vocalAssist);
+    // Send queue_add via WebSocket with vocal assist level (+ metadata for YouTube songs)
+    const isYouTube = String(song.id).startsWith('youtube:');
+    const meta = isYouTube ? {
+      title: song.title,
+      artist: song.artist || '',
+      duration: song.duration,
+      thumbnail_url: song.thumbnail_url,
+    } : undefined;
+    wsService.queueAdd(String(song.id), vocalAssist, meta);
 
     // Show notification
     roomStore.addNotification('success', `Added "${song.title}" to queue`);

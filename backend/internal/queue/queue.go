@@ -17,7 +17,7 @@ type Manager struct {
 	songs        []models.Song
 	position     int
 	autoplay     bool
-	fairRotation bool  // Use round-robin queue instead of FIFO
+	fairRotation bool // Use round-robin queue instead of FIFO
 	mu           sync.RWMutex
 
 	// Callbacks
@@ -45,7 +45,9 @@ func NewManager(dbPath string) (*Manager, error) {
 			vocal_assist TEXT DEFAULT 'OFF',
 			added_by TEXT,
 			added_at DATETIME,
-			queue_order INTEGER
+			queue_order INTEGER,
+			cdg_path TEXT DEFAULT '',
+			audio_path TEXT DEFAULT ''
 		)
 	`)
 	if err != nil {
@@ -66,6 +68,10 @@ func NewManager(dbPath string) (*Manager, error) {
 
 	// Add autoplay column if it doesn't exist (migration for existing DBs)
 	db.Exec(`ALTER TABLE queue_state ADD COLUMN autoplay INTEGER DEFAULT 0`)
+
+	// Add CDG/audio columns if they don't exist (migration for existing DBs)
+	db.Exec(`ALTER TABLE queue ADD COLUMN cdg_path TEXT DEFAULT ''`)
+	db.Exec(`ALTER TABLE queue ADD COLUMN audio_path TEXT DEFAULT ''`)
 
 	// Initialize state if not exists (autoplay defaults to OFF)
 	db.Exec(`INSERT OR IGNORE INTO queue_state (id, position, autoplay) VALUES (1, 0, 0)`)
@@ -98,7 +104,8 @@ func (m *Manager) loadQueue() error {
 	// Load songs
 	rows, err := m.db.Query(`
 		SELECT id, title, artist, duration, thumbnail_url, video_url,
-		       vocal_path, instr_path, vocal_assist, added_by, added_at
+		       vocal_path, instr_path, vocal_assist, added_by, added_at,
+		       COALESCE(cdg_path, ''), COALESCE(audio_path, '')
 		FROM queue
 		ORDER BY queue_order ASC
 	`)
@@ -125,6 +132,8 @@ func (m *Manager) loadQueue() error {
 			&song.VocalAssist,
 			&song.AddedBy,
 			&addedAt,
+			&song.CDGPath,
+			&song.AudioPath,
 		)
 		if err != nil {
 			continue
@@ -658,6 +667,45 @@ func (m *Manager) RemoveByUser(martynKey string) (bool, error) {
 	return currentRemoved, nil
 }
 
+// UpdateVideoURL updates the video URL for a song (e.g. when YouTube download completes)
+func (m *Manager) UpdateVideoURL(songID, videoURL string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for i := range m.songs {
+		if m.songs[i].ID == songID {
+			m.songs[i].VideoURL = videoURL
+
+			_, err := m.db.Exec(
+				`UPDATE queue SET video_url = ? WHERE id = ?`,
+				videoURL, songID,
+			)
+			return err
+		}
+	}
+	return nil
+}
+
+// UpdateCurrentKeyChange updates the key change for the currently playing song
+func (m *Manager) UpdateCurrentKeyChange(semitones int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.position >= 0 && m.position < len(m.songs) {
+		m.songs[m.position].KeyChange = semitones
+	}
+}
+
+// UpdateCurrentTempoChange updates the tempo for the currently playing song
+func (m *Manager) UpdateCurrentTempoChange(speed float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.position >= 0 && m.position < len(m.songs) {
+		m.songs[m.position].TempoChange = speed
+	}
+}
+
 // UpdateSongPaths updates the vocal/instrumental paths for a song
 func (m *Manager) UpdateSongPaths(songID, vocalPath, instrPath string) error {
 	m.mu.Lock()
@@ -688,8 +736,9 @@ func (m *Manager) saveSong(song models.Song, order int) error {
 	_, err := m.db.Exec(`
 		INSERT OR REPLACE INTO queue
 		(id, title, artist, duration, thumbnail_url, video_url,
-		 vocal_path, instr_path, vocal_assist, added_by, added_at, queue_order)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 vocal_path, instr_path, vocal_assist, added_by, added_at, queue_order,
+		 cdg_path, audio_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		song.ID,
 		song.Title,
@@ -703,6 +752,8 @@ func (m *Manager) saveSong(song models.Song, order int) error {
 		song.AddedBy,
 		song.AddedAt.Format(time.RFC3339),
 		order,
+		song.CDGPath,
+		song.AudioPath,
 	)
 	return err
 }

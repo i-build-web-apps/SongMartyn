@@ -53,8 +53,8 @@ const (
 
 // Colors matching the brand
 var (
-	cyanColor   = color.RGBA{0, 188, 212, 255}   // #00bcd4 - for "SONG"
-	yellowColor = color.RGBA{234, 179, 8, 255}   // #eab308 - for "MARTYN"
+	cyanColor   = color.RGBA{0, 188, 212, 255} // #00bcd4 - for "SONG"
+	yellowColor = color.RGBA{234, 179, 8, 255} // #eab308 - for "MARTYN"
 	whiteColor  = color.RGBA{255, 255, 255, 255}
 	grayColor   = color.RGBA{160, 160, 160, 255}
 )
@@ -93,10 +93,11 @@ func NewGenerator(tempDir, avatarAPIURL string) (*Generator, error) {
 
 // NextUpInfo contains information about the next song and singer
 type NextUpInfo struct {
-	SongTitle    string
-	SongArtist   string
-	SingerName   string
-	AvatarConfig *models.AvatarConfig
+	SongTitle      string
+	SongArtist     string
+	SingerName     string
+	AvatarConfig   *models.AvatarConfig
+	WaitingForHost bool // true when autoplay is off and host must press play
 }
 
 // Generate creates a holding screen image and returns the file path
@@ -327,10 +328,18 @@ func (g *Generator) drawNextUpSection(dc *gg.Context, nextUp *NextUpInfo) {
 			dc.DrawString(nextUp.SongArtist, textX, boxY+innerPadding+105)
 		}
 
-		// Singer name
-		dc.SetColor(cyanColor)
-		if err := loadFont(dc, 24); err == nil {
-			dc.DrawString(nextUp.SingerName, textX, boxY+innerPadding+145)
+		if nextUp.WaitingForHost {
+			// Show "Waiting for host to start..." instead of singer name
+			dc.SetColor(yellowColor)
+			if err := loadFont(dc, 24); err == nil {
+				dc.DrawString("Waiting for host to start...", textX, boxY+innerPadding+145)
+			}
+		} else {
+			// Singer name
+			dc.SetColor(cyanColor)
+			if err := loadFont(dc, 24); err == nil {
+				dc.DrawString(nextUp.SingerName, textX, boxY+innerPadding+145)
+			}
 		}
 	} else {
 		// Placeholder text - large and readable
