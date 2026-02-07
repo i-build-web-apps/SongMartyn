@@ -3,9 +3,9 @@ version: 2
 before:
   hooks:
     # Build frontend and copy into embed location
-    - cmd: npm ci --prefix frontend
-    - cmd: npm run build --prefix frontend
-    - cmd: sh -c "rm -rf backend/cmd/songmartyn/dist && cp -r frontend/dist backend/cmd/songmartyn/dist"
+    - npm ci --prefix frontend
+    - npm run build --prefix frontend
+    - sh -c "rm -rf backend/cmd/songmartyn/dist && cp -r frontend/dist backend/cmd/songmartyn/dist"
 
 builds:
   - id: songmartyn
