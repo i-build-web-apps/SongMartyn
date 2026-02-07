@@ -1061,6 +1061,9 @@ func (app *App) setupHandlers() {
 						app.showHoldingScreen()
 					}
 				}
+			} else {
+				// Non-current song removed — refresh "Next Up" if idle
+				app.updateHoldingScreenIfIdle()
 			}
 
 			app.broadcastState()
@@ -1072,6 +1075,7 @@ func (app *App) setupHandlers() {
 				return
 			}
 			log.Printf("Queue reordered by %s: %d -> %d", client.GetSession().DisplayName, from, to)
+			app.updateHoldingScreenIfIdle()
 			app.broadcastState()
 		},
 
