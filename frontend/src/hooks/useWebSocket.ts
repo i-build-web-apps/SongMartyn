@@ -1,6 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { wsService } from '../services/websocket';
 import { useRoomStore } from '../stores/roomStore';
+
+// Module-level flag — survives React StrictMode cleanup/remount cycles
+let wsInitialized = false;
 
 // Track the last song ID we notified about to avoid repeats
 let lastNotifiedNextUpId: string | null = null;
@@ -53,11 +56,9 @@ function checkNextUpNotification(store: ReturnType<typeof useRoomStore.getState>
 }
 
 export function useWebSocket() {
-  const isInitialized = useRef(false);
-
   useEffect(() => {
-    if (isInitialized.current) return;
-    isInitialized.current = true;
+    if (wsInitialized) return;
+    wsInitialized = true;
 
     const store = useRoomStore.getState();
     store.setConnecting(true);

@@ -1161,7 +1161,7 @@ func (app *App) setupHandlers() {
 
 				if app.ytDownloader == nil {
 					app.hub.SendTo(client, websocket.MsgError, map[string]string{
-						"error": "YouTube downloads not available (yt-dlp not installed)",
+						"message": "YouTube downloads not available (yt-dlp not installed)",
 					})
 					return
 				}
@@ -1191,7 +1191,7 @@ func (app *App) setupHandlers() {
 				libSong, err := app.library.GetSong(songID)
 				if err != nil {
 					log.Printf("Failed to get song %s: %v", songID, err)
-					app.hub.SendTo(client, websocket.MsgError, map[string]string{"error": "Song not found"})
+					app.hub.SendTo(client, websocket.MsgError, map[string]string{"message": "Song not found"})
 					return
 				}
 
@@ -1214,7 +1214,7 @@ func (app *App) setupHandlers() {
 			// Add to queue
 			if err := app.queue.Add(song); err != nil {
 				log.Printf("Failed to add song to queue: %v", err)
-				app.hub.SendTo(client, websocket.MsgError, map[string]string{"error": "Failed to add to queue"})
+				app.hub.SendTo(client, websocket.MsgError, map[string]string{"message": "Failed to add to queue"})
 				return
 			}
 
@@ -1317,6 +1317,7 @@ func (app *App) setupHandlers() {
 				currentSingerKey = current.AddedBy
 			}
 			app.mpv.StopPlayback()
+			app.setIdle(true) // Set idle before queue advance to prevent premature "Now Playing"
 			if next := app.queue.Next(); next != nil {
 				// Use countdown system for consistent transitions
 				app.startCountdown(currentSingerKey)
@@ -1671,6 +1672,7 @@ func (app *App) setupHandlers() {
 				log.Printf("Warning: failed to stop playback: %v", err)
 			}
 			// Skip current song (moves it to history)
+			app.setIdle(true) // Set idle before queue advance to prevent premature "Now Playing"
 			app.queue.Skip()
 			// Brief delay to ensure MPV is ready for new content
 			time.Sleep(100 * time.Millisecond)
@@ -1786,6 +1788,7 @@ func (app *App) setupHandlers() {
 		}
 
 		// Always advance the queue position (moves current song to history)
+		app.setIdle(true) // Set idle before queue advance to prevent premature "Now Playing"
 		nextSong := app.queue.Skip()
 
 		// No next song — show holding screen / BGM
@@ -2588,6 +2591,7 @@ func (app *App) handleSongLoadError(failedSong *models.Song) {
 	log.Printf("Skipping failed song: '%s' by '%s'", failedSong.Title, failedSong.Artist)
 
 	// Advance to next song in queue (Skip advances position)
+	app.setIdle(true) // Set idle before queue advance to prevent premature "Now Playing"
 	next := app.queue.Skip()
 	app.broadcastState()
 
@@ -3061,7 +3065,7 @@ func (app *App) handleAdminClientAction(w http.ResponseWriter, r *http.Request) 
 	parts := splitPath(path)
 	if len(parts) < 1 {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid path"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "Invalid path"})
 		return
 	}
 
@@ -3079,13 +3083,13 @@ func (app *App) handleAdminClientAction(w http.ResponseWriter, r *http.Request) 
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Invalid request"})
 			return
 		}
 
 		if err := app.sessions.SetAdmin(martynKey, req.IsAdmin); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 			return
 		}
 
@@ -3104,7 +3108,7 @@ func (app *App) handleAdminClientAction(w http.ResponseWriter, r *http.Request) 
 		client := app.hub.FindClientByMartynKey(martynKey)
 		if client == nil {
 			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Client not found"})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Client not found"})
 			return
 		}
 
@@ -3113,7 +3117,7 @@ func (app *App) handleAdminClientAction(w http.ResponseWriter, r *http.Request) 
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unknown action"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "Unknown action"})
 	}
 }
 
@@ -3153,7 +3157,7 @@ func (app *App) handleLibraryLocations(w http.ResponseWriter, r *http.Request) {
 		locations, err := app.library.GetLocations()
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 			return
 		}
 		if locations == nil {
@@ -3168,14 +3172,14 @@ func (app *App) handleLibraryLocations(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Invalid request"})
 			return
 		}
 
 		location, err := app.library.AddLocation(req.Path, req.Name)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 			return
 		}
 
@@ -3195,7 +3199,7 @@ func (app *App) handleLibraryLocationAction(w http.ResponseWriter, r *http.Reque
 	parts := splitPath(path)
 	if len(parts) < 1 {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid path"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "Invalid path"})
 		return
 	}
 
@@ -3213,7 +3217,7 @@ func (app *App) handleLibraryLocationAction(w http.ResponseWriter, r *http.Reque
 		count, err := app.library.ScanLocation(locationID)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -3225,14 +3229,14 @@ func (app *App) handleLibraryLocationAction(w http.ResponseWriter, r *http.Reque
 		// Delete location
 		if err := app.library.RemoveLocation(locationID); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unknown action"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "Unknown action"})
 	}
 }
 
@@ -3254,7 +3258,7 @@ func (app *App) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 	songs, err := app.library.SearchSongs(query, 50)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 		return
 	}
 
@@ -3282,7 +3286,7 @@ func (app *App) handleLibraryStats(w http.ResponseWriter, r *http.Request) {
 	totalSongs, totalPlays, err := app.library.GetStats()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 		return
 	}
 
@@ -3304,7 +3308,7 @@ func (app *App) handleLibraryPopular(w http.ResponseWriter, r *http.Request) {
 	songs, err := app.library.GetPopularSongs(20)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 		return
 	}
 
@@ -3333,7 +3337,7 @@ func (app *App) handleLibrarySongsByIDs(w http.ResponseWriter, r *http.Request) 
 	songs, err := app.library.GetSongsByIDs(ids)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 		return
 	}
 
@@ -3363,7 +3367,7 @@ func (app *App) handleSongSelection(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "Invalid request"})
 		return
 	}
 
@@ -3393,7 +3397,7 @@ func (app *App) handleLibraryHistory(w http.ResponseWriter, r *http.Request) {
 	history, err := app.library.GetUserHistory(martynKey, 50)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 		return
 	}
 
@@ -3503,7 +3507,7 @@ func (app *App) handleYouTubeSearch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("YouTube API request failed: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "YouTube API request failed"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "YouTube API request failed"})
 		return
 	}
 	defer resp.Body.Close()
@@ -3512,7 +3516,7 @@ func (app *App) handleYouTubeSearch(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(resp.Body)
 		log.Printf("YouTube API error (status %d): %s", resp.StatusCode, string(body))
 		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": "YouTube API returned an error"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "YouTube API returned an error"})
 		return
 	}
 
@@ -3520,7 +3524,7 @@ func (app *App) handleYouTubeSearch(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
 		log.Printf("Failed to parse YouTube API response: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to parse YouTube response"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "Failed to parse YouTube response"})
 		return
 	}
 
@@ -3609,7 +3613,7 @@ func (app *App) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		if err := app.library.ClearSearchLogs(); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -3620,7 +3624,7 @@ func (app *App) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 	logs, err := app.library.GetSearchLogs(100, source)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 		return
 	}
 
@@ -3643,7 +3647,7 @@ func (app *App) handleSongSelections(w http.ResponseWriter, r *http.Request) {
 	selections, err := app.library.GetSongSelections(100, source)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 		return
 	}
 
@@ -3665,7 +3669,7 @@ func (app *App) handleSearchStats(w http.ResponseWriter, r *http.Request) {
 	totalSearches, uniqueQueries, notFoundCount, topQueries, err := app.library.GetSearchStats()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 		return
 	}
 
@@ -3732,7 +3736,7 @@ func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		var settings SettingsPayload
 		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Invalid request"})
 			return
 		}
 
@@ -3797,7 +3801,7 @@ func (app *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		// Write all settings to config file (includes BGM, holding message, etc.)
 		if err := app.writeConfigFile(); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save settings: " + err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Failed to save settings: " + err.Error()})
 			return
 		}
 
@@ -3952,7 +3956,7 @@ func (app *App) handleNetworkEnumeration(w http.ResponseWriter, r *http.Request)
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 		return
 	}
 
@@ -4099,7 +4103,7 @@ func (app *App) handleConnectURL(w http.ResponseWriter, r *http.Request) {
 		// Check admin auth for POST
 		if !app.admin.IsAuthorized(r) {
 			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Unauthorized"})
 			return
 		}
 
@@ -4108,14 +4112,14 @@ func (app *App) handleConnectURL(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Invalid request"})
 			return
 		}
 
 		// Save to file
 		if err := os.WriteFile(connectURLFile, []byte(req.URL), 0644); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save"})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Failed to save"})
 			return
 		}
 
@@ -4299,13 +4303,13 @@ func (app *App) handlePlayer(w http.ResponseWriter, r *http.Request) {
 			err = app.mpv.Start()
 		default:
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid action"})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Invalid action"})
 			return
 		}
 
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to " + req.Action + " player: " + err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Failed to " + req.Action + " player: " + err.Error()})
 			return
 		}
 
@@ -4354,7 +4358,7 @@ func (app *App) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Invalid request"})
 			return
 		}
 
@@ -4397,13 +4401,13 @@ func (app *App) handleDatabase(w http.ResponseWriter, r *http.Request) {
 
 		default:
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Unknown action: " + req.Action})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Unknown action: " + req.Action})
 			return
 		}
 
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"message": err.Error()})
 			return
 		}
 
@@ -4431,7 +4435,7 @@ func (app *App) handleBGM(w http.ResponseWriter, r *http.Request) {
 		var settings models.BGMSettings
 		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+			json.NewEncoder(w).Encode(map[string]string{"message": "Invalid request"})
 			return
 		}
 

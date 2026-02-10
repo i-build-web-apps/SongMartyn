@@ -671,7 +671,7 @@ func (c *Client) handleMessage(msg Message) {
 	case MsgKeyChange:
 		// Admin only - change pitch/key
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var semitones int
@@ -685,7 +685,7 @@ func (c *Client) handleMessage(msg Message) {
 	case MsgTempoChange:
 		// Admin only - change tempo/speed
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var speed float64
@@ -708,7 +708,7 @@ func (c *Client) handleMessage(msg Message) {
 	case MsgSetPlaybackConfig:
 		// Admin only - set playback mode/timer/delay
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var config models.PlaybackConfig
@@ -731,7 +731,7 @@ func (c *Client) handleMessage(msg Message) {
 	case MsgQueueShuffle:
 		// Admin only - shuffle queue
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		if c.hub.onQueueShuffle != nil {
@@ -741,7 +741,7 @@ func (c *Client) handleMessage(msg Message) {
 	case MsgQueueRequeue:
 		// Admin only - re-add song from history with new user
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var payload struct {
@@ -797,7 +797,7 @@ func (c *Client) handleMessage(msg Message) {
 	case MsgAdminSetAdmin:
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var payload AdminSetAdminPayload
@@ -806,14 +806,14 @@ func (c *Client) handleMessage(msg Message) {
 		}
 		if c.hub.onAdminSetAdmin != nil {
 			if err := c.hub.onAdminSetAdmin(c, payload.MartynKey, payload.IsAdmin); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 
 	case MsgAdminKick:
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var payload AdminKickPayload
@@ -822,14 +822,14 @@ func (c *Client) handleMessage(msg Message) {
 		}
 		if c.hub.onAdminKick != nil {
 			if err := c.hub.onAdminKick(c, payload.MartynKey, payload.Reason); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 
 	case MsgAdminBlock:
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var payload AdminBlockPayload
@@ -838,14 +838,14 @@ func (c *Client) handleMessage(msg Message) {
 		}
 		if c.hub.onAdminBlock != nil {
 			if err := c.hub.onAdminBlock(c, payload.MartynKey, payload.Duration, payload.Reason); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 
 	case MsgAdminUnblock:
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var payload AdminUnblockPayload
@@ -854,14 +854,14 @@ func (c *Client) handleMessage(msg Message) {
 		}
 		if c.hub.onAdminUnblock != nil {
 			if err := c.hub.onAdminUnblock(c, payload.MartynKey); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 
 	case MsgAdminSetAFK:
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var payload AdminSetAFKPayload
@@ -870,7 +870,7 @@ func (c *Client) handleMessage(msg Message) {
 		}
 		if c.hub.onAdminSetAFK != nil {
 			if err := c.hub.onAdminSetAFK(c, payload.MartynKey, payload.IsAFK); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 
@@ -879,12 +879,12 @@ func (c *Client) handleMessage(msg Message) {
 		// Check if client is admin
 		if c.session == nil {
 			log.Printf("[DEBUG] MsgAdminPlayNext REJECTED: session is nil")
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized - no session"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized - no session"})
 			return
 		}
 		if !c.session.IsAdmin {
 			log.Printf("[DEBUG] MsgAdminPlayNext REJECTED: user %s is not admin (IsAdmin=%v)", c.session.DisplayName, c.session.IsAdmin)
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized - not admin"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized - not admin"})
 			return
 		}
 		log.Printf("[DEBUG] MsgAdminPlayNext AUTHORIZED for admin %s", c.session.DisplayName)
@@ -892,7 +892,7 @@ func (c *Client) handleMessage(msg Message) {
 			log.Printf("[DEBUG] Calling onAdminPlayNext handler")
 			if err := c.hub.onAdminPlayNext(c); err != nil {
 				log.Printf("[DEBUG] onAdminPlayNext returned error: %v", err)
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			} else {
 				log.Printf("[DEBUG] onAdminPlayNext completed successfully")
 			}
@@ -904,32 +904,32 @@ func (c *Client) handleMessage(msg Message) {
 		log.Printf("[DEBUG] MsgAdminStartNow received from %s", c.conn.RemoteAddr())
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		log.Printf("[DEBUG] MsgAdminStartNow AUTHORIZED for admin %s", c.session.DisplayName)
 		if c.hub.onAdminStartNow != nil {
 			if err := c.hub.onAdminStartNow(c); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 
 	case MsgAdminStop:
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		if c.hub.onAdminStop != nil {
 			if err := c.hub.onAdminStop(c); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 
 	case MsgAdminSetName:
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var payload AdminSetNamePayload
@@ -937,19 +937,19 @@ func (c *Client) handleMessage(msg Message) {
 			return
 		}
 		if payload.MartynKey == "" || payload.DisplayName == "" {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Missing martyn_key or display_name"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Missing martyn_key or display_name"})
 			return
 		}
 		if c.hub.onAdminSetName != nil {
 			if err := c.hub.onAdminSetName(c, payload.MartynKey, payload.DisplayName); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 
 	case MsgAdminSetNameLock:
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Not authorized"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Not authorized"})
 			return
 		}
 		var payload AdminSetNameLockPayload
@@ -957,12 +957,12 @@ func (c *Client) handleMessage(msg Message) {
 			return
 		}
 		if payload.MartynKey == "" {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Missing martyn_key"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Missing martyn_key"})
 			return
 		}
 		if c.hub.onAdminSetNameLock != nil {
 			if err := c.hub.onAdminSetNameLock(c, payload.MartynKey, payload.Locked); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 
@@ -971,20 +971,20 @@ func (c *Client) handleMessage(msg Message) {
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
 			log.Printf("[DEBUG] MsgAdminToggleBGM REJECTED - not admin")
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Admin access required"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Admin access required"})
 			return
 		}
 		log.Printf("[DEBUG] MsgAdminToggleBGM AUTHORIZED for admin %s", c.session.DisplayName)
 		if c.hub.onAdminToggleBGM != nil {
 			if err := c.hub.onAdminToggleBGM(c); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 
 	case MsgAdminSetMessage:
 		// Check if client is admin
 		if c.session == nil || !c.session.IsAdmin {
-			c.hub.SendTo(c, MsgError, map[string]string{"error": "Admin access required"})
+			c.hub.SendTo(c, MsgError, map[string]string{"message": "Admin access required"})
 			return
 		}
 		var message string
@@ -993,7 +993,7 @@ func (c *Client) handleMessage(msg Message) {
 		}
 		if c.hub.onAdminSetMessage != nil {
 			if err := c.hub.onAdminSetMessage(c, message); err != nil {
-				c.hub.SendTo(c, MsgError, map[string]string{"error": err.Error()})
+				c.hub.SendTo(c, MsgError, map[string]string{"message": err.Error()})
 			}
 		}
 	}
